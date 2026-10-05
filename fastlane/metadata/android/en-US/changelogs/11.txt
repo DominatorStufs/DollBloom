@@ -1,8 +1,0 @@
-* Added Serbian (Latin letters) translations
-* Added Russian translations
-* Added Estonian translations
-* Fixed stability issues related to internal changes in YouTube Music
-* Added 'Pause cache' toggle
-* Added sponsorblock
-* Added sort buttons to Favorites/Offline playlist
-* Enhanced animations

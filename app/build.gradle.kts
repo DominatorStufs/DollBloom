@@ -1,183 +1,436 @@
-import org.jetbrains.kotlin.compose.compiler.gradle.ComposeFeatureFlag
-import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
+import java.util.Properties
 
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.kotlin.parcelize)
-    alias(libs.plugins.ksp)
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-android {
-    val appId = "${project.group}.android"
+/**
+ * Signing details are kept out of tracked source in the root-level
+ * `keystore.properties` (see keystore.properties.example). CI creates this file
+ * from GitHub Actions secrets at build time. Without it, release builds remain
+ * unsigned rather than failing.
+ */
+val signing = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
 
-    namespace = appId
-    compileSdk = 35
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val lastfmApiKey: String = (
+    localProps.getProperty("LASTFM_API_KEY")
+        ?: System.getenv("LASTFM_API_KEY")
+        ?: ""
+    ).trim()
+val lastfmSecret: String = (
+    localProps.getProperty("LASTFM_SECRET")
+        ?: System.getenv("LASTFM_SECRET")
+        ?: ""
+    ).trim()
+
+/*
+ * Where Listen Together's party server lives. Not a credential — it is a public
+ * URL, and every device in a party has to be pointed at the same one — but it is
+ * deployment-specific rather than a property of the source, which is what puts
+ * it here beside the others instead of in a constant.
+ *
+ * Empty is a supported state, not a broken build: the field below is only the
+ * *default* the address box on the Listen Together screen starts with, and
+ * anything typed there wins and persists. So a fresh checkout without this line
+ * builds and runs, and simply asks for an address the first time somebody opens
+ * the screen. See ListenTogether.DEFAULT_SERVER.
+ */
+val listenTogetherServer: String = (
+    localProps.getProperty("LISTEN_TOGETHER_SERVER")?.takeIf { it.isNotBlank() }
+        ?: System.getenv("LISTEN_TOGETHER_SERVER")?.takeIf { it.isNotBlank() }
+        ?: "https://bitchord-listen-together.onrender.com"
+    ).trim().trimEnd('/')
+
+/*
+ * Direct/local builds keep these defaults. The manual Android workflow passes
+ * appVersionCode and appVersionName as Gradle properties. Version name stays a
+ * string, so values such as "1.8-beta2" or "DollBloom2026" are supported.
+ */
+val configuredVersionCode = providers.gradleProperty("appVersionCode").orNull
+val appVersionCode = if (configuredVersionCode == null) {
+    22
+} else {
+    val parsed = configuredVersionCode.toIntOrNull()
+        ?: throw GradleException("appVersionCode must be a positive integer")
+    if (parsed !in 1..2_100_000_000) {
+        throw GradleException("appVersionCode must be between 1 and 2100000000")
+    }
+    parsed
+}
+val configuredVersionName = providers.gradleProperty("appVersionName").orNull
+val appVersionName = configuredVersionName ?: "1.7"
+if (!Regex("[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}").matches(appVersionName)) {
+    throw GradleException("appVersionName must be 1-64 letters/digits, spaces, dots, underscores, pluses, or hyphens")
+}
+val betaSuffix = ""
+
+android {
+    namespace = "com.doll.bloom"
+    // InnerTubeX's AAR requires compiling against 37; targetSdk (runtime behaviour) stays 36.
+    compileSdk = 37
 
     defaultConfig {
-        applicationId = appId
+        applicationId = "com.doll.bloom"
+        // 26 keeps reach wide; real-time blur (RenderEffect) kicks in on API 31+,
+        // Haze falls back to a translucent scrim below that.
+        minSdk = 26
+        targetSdk = 36
+        versionCode = appVersionCode
+        versionName = appVersionName
 
-        minSdk = 21
-        targetSdk = 35
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 14
-        versionName = project.version.toString()
+        // Last.fm credentials are supplied locally and never committed.
+        buildConfigField("String", "LASTFM_API_KEY", "\"${lastfmApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        buildConfigField("String", "LASTFM_SECRET", "\"${lastfmSecret.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        buildConfigField(
+            "String",
+            "LISTEN_TOGETHER_SERVER",
+            "\"${listenTogetherServer.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+        )
+    }
 
-        multiDexEnabled = true
+    lint {
+        // These manifest-registered Kotlin components correctly extend their AndroidX
+        // component base classes, but the current lint run misreports them as invalid.
+        // Suppress only this false-positive issue; keep the remaining release lint checks.
+        disable += "Instantiatable"
     }
 
     splits {
         abi {
+            isEnable = true
             reset()
+            include("armeabi-v7a", "arm64-v8a", "x86_64")
             isUniversalApk = true
         }
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    // Dev and prod remain separate resource/configuration flavors, but every
+    // app variant intentionally keeps the same application ID: com.doll.bloom.
+    flavorDimensions += "env"
+    productFlavors {
+        create("dev") {
+            dimension = "env"
+            resValue("string", "app_name", "DollBloom 🌸 Dev")
+        }
+        create("prod") {
+            dimension = "env"
+            // Matches defaultConfig — this is the package already shipped/installed.
+        }
+    }
+
     signingConfigs {
-        create("ci") {
-            storeFile = System.getenv("ANDROID_NIGHTLY_KEYSTORE")?.let { file(it) }
-            storePassword = System.getenv("ANDROID_NIGHTLY_KEYSTORE_PASSWORD")
-            keyAlias = System.getenv("ANDROID_NIGHTLY_KEYSTORE_ALIAS")
-            keyPassword = System.getenv("ANDROID_NIGHTLY_KEYSTORE_PASSWORD")
+        // Both halves have to be there, not just the properties file: it *names*
+        // the keystore rather than containing it, and both are gitignored
+        // separately, so a checkout can easily end up with the one and not the
+        // other. A signing config pointing at a keystore that is not on disk
+        // fails the release build outright at validateSigningRelease — which is
+        // exactly the failure the unsigned fallback above exists to avoid, so
+        // the keystore has to be looked for rather than assumed.
+        val store = signing.getProperty("storeFile")?.let { rootProject.file(it) }
+        if (store != null && store.exists()) {
+            create("release") {
+                storeFile = store
+                storeType = signing.getProperty("storeType") ?: "JKS"
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
         }
     }
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-DEBUG"
-            manifestPlaceholders["appName"] = "ViTune Debug"
+            if (betaSuffix.isNotEmpty()) versionNameSuffix = "-$betaSuffix"
         }
-
         release {
-            versionNameSuffix = "-RELEASE"
+            // Carried here too — see [betaSuffix]. A sideloaded beta is a
+            // release build, and it is the one that most needs the marker.
+            if (betaSuffix.isNotEmpty()) versionNameSuffix = "-$betaSuffix"
+            /*
+             * On for what it does to speed, not size. Compose is written to be
+             * run through R8 — without it every composable keeps the debug-era
+             * shape the compiler emits, and the whole UI runs measurably slower.
+             *
+             * Nothing is renamed (-dontobfuscate), and every library that reaches
+             * for classes by name — Rhino running YouTube's player JavaScript,
+             * NewPipe, InnerTubeX, QuickJS, SMBJ and BouncyCastle, ONNX's JNI,
+             * protobuf-lite, Ktor — is kept whole: see proguard-rules.pro. What R8
+             * is left to optimise is Compose, Media3, coroutines and our own
+             * code, which is where the time goes. Checked on a device through the
+             * `benchmark` build type below before it ships.
+             */
             isMinifyEnabled = true
-            isShrinkResources = true
-            manifestPlaceholders["appName"] = "ViTune"
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Null without a keystore to sign with: the build then produces
+            // app-release-unsigned.apk instead of failing outright.
+            signingConfig = signingConfigs.findByName("release")
         }
-
-        create("nightly") {
+        /*
+         * A release-like benchmark build of the dev flavor. It uses the same
+         * application ID (`com.doll.bloom`) as every other variant, so installing
+         * it replaces whichever DollBloom variant is already on the device. It
+         * uses the debug key and non-debuggable runtime to check R8 and measure
+         * startup. `./gradlew installDevBenchmark`.
+         */
+        create("benchmark") {
             initWith(getByName("release"))
-            matchingFallbacks += "release"
-
-            applicationIdSuffix = ".nightly"
-            versionNameSuffix = "-NIGHTLY"
-            manifestPlaceholders["appName"] = "ViTune Nightly"
-            signingConfig = signingConfigs.findByName("ci")
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
         }
     }
-
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    packaging {
+        jniLibs {
+            // Compress native libraries inside APKs to reduce sideload download size.
+            // Android extracts them at install time; all native libraries and ABIs remain included.
+            useLegacyPackaging = true
+        }
+        resources {
+            // SMBJ's BouncyCastle and jspecify both ship this descriptor.
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
     buildFeatures {
+        compose = true
         buildConfig = true
     }
-
-    compileOptions {
-        isCoreLibraryDesugaringEnabled = true
-    }
-
-    packaging {
-        resources.excludes.add("META-INF/**/*")
-    }
-
-    androidResources {
-        @Suppress("UnstableApiUsage")
-        generateLocaleConfig = true
+    testOptions {
+        unitTests {
+            // Unit tests run against a stub android.jar whose methods throw
+            // rather than return. That is the right default for anything whose
+            // behaviour depends on the framework, and wrong for android.util.Log
+            // — which [TrackLog] calls on every decision the source layer makes,
+            // so a test of that layer fails on the logging rather than on the
+            // logic it was written to check.
+            isReturnDefaultValues = true
+        }
     }
 }
 
 kotlin {
-    jvmToolchain(libs.versions.jvm.get().toInt())
-
     compilerOptions {
-        languageVersion.set(KotlinVersion.KOTLIN_2_2)
-
-        freeCompilerArgs.addAll(
-            "-Xcontext-receivers",
-            "-Xnon-local-break-continue",
-            "-Xconsistent-data-class-copy-visibility"
-        )
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
+/*
+ * NewPipeExtractor ships its own org.schabi.newpipe.extractor.utils.Utils, and
+ * app/src/main/java carries a patched copy at the same package path (see that
+ * file for why it exists). A debug build keeps project and library dex separate,
+ * so the project copy simply wins at class-load time and the two coexist; a
+ * release build merges every input into one dex set, where D8 rejects the
+ * duplicate type outright ("Utils is defined multiple times"). So the library's
+ * copy is stripped from its jar before it reaches dexing, leaving exactly one
+ * definition of the class in the build.
+ *
+ * The artifact is resolved on its own and non-transitive purely to re-jar it;
+ * the transitive dependencies it would otherwise have carried are declared by
+ * hand in the dependencies block below, since dropping the module drops them too.
+ */
+val newPipeExtractorRaw: Configuration by configurations.creating {
+    isTransitive = false
+    isCanBeConsumed = false
 }
-
-composeCompiler {
-    featureFlags = setOf(
-        ComposeFeatureFlag.OptimizeNonSkippingGroups
-    )
-
-    if (project.findProperty("enableComposeCompilerReports") == "true") {
-        val dest = layout.buildDirectory.dir("compose_metrics")
-        metricsDestination = dest
-        reportsDestination = dest
+dependencies {
+    newPipeExtractorRaw("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")
+}
+val newPipeExtractorStripped = tasks.register<org.gradle.api.tasks.bundling.Jar>(
+    "stripNewPipeExtractorUtils"
+) {
+    archiveFileName.set("NewPipeExtractor-v0.26.3-noutils.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("stripped-libs"))
+    from(provider { newPipeExtractorRaw.map { zipTree(it) } }) {
+        // The class itself, plus any nested or synthetic siblings the upstream
+        // compiler emitted alongside it, so nothing from the jar's Utils survives.
+        exclude("org/schabi/newpipe/extractor/utils/Utils.class")
+        exclude("org/schabi/newpipe/extractor/utils/Utils\$*.class")
     }
 }
 
 dependencies {
-    coreLibraryDesugaring(libs.desugaring)
+    // ---- Compose (Material 3) ----
+    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    implementation(composeBom)
+    // Pinned above the BOM's 1.7.6: [IosOverscroll] uses OverscrollFactory,
+    // which that version doesn't have. Newer foundation alongside the BOM's
+    // older ui/material3 is a combination Compose supports deliberately —
+    // foundation depends on ui, not the reverse — and this exact pairing was
+    // already in effect (foundation was reaching 1.10.0 transitively through
+    // the liquid-glass library before that dependency was removed).
+    implementation("androidx.compose.foundation:foundation:1.10.0")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 
-    implementation(projects.compose.persist)
-    implementation(projects.compose.preferences)
-    implementation(projects.compose.routing)
-    implementation(projects.compose.reordering)
+    // ---- Media playback: Media3 / ExoPlayer ----
+    implementation("androidx.media3:media3-exoplayer:1.11.0")
+    implementation("androidx.media3:media3-session:1.11.0")
+    implementation("androidx.media3:media3-common:1.11.0")
+    implementation("androidx.media3:media3-datasource-okhttp:1.11.0")
+    // Audio is progressive, but Apple serves its motion artwork as HLS — this
+    // is what lets the animated sleeve play it. See CanvasArtworkPlayer.
+    implementation("androidx.media3:media3-exoplayer-hls:1.11.0")
+    // Source modules hand back manifests rather than files, and which kind is
+    // the backend's choice, not ours: the Tidal one served `.m3u8` until
+    // September 2026 and `.mpd` after it, for the same track and the same
+    // request. Without this artifact a DASH manifest is not merely unplayed —
+    // DefaultMediaSourceFactory cannot build a source for it, falls back to
+    // progressive, and the extractors try to sniff XML as audio
+    // (ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED). See withResolvedStreamType.
+    implementation("androidx.media3:media3-exoplayer-dash:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.9.0")
 
-    implementation(fileTree(projectDir.resolve("vendor")))
+    // ---- Images: Coil 3 + Palette (dominant colors for the mesh gradient) ----
+    implementation("io.coil-kt.coil3:coil-compose:3.0.4")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.0.4")
+    implementation("androidx.palette:palette-ktx:1.0.0")
 
-    implementation(platform(libs.compose.bom))
-    implementation(libs.compose.activity)
-    implementation(libs.compose.foundation)
-    implementation(libs.compose.ui)
-    implementation(libs.compose.ui.util)
-    implementation(libs.compose.shimmer)
-    implementation(libs.compose.lottie)
-    implementation(libs.compose.material3)
+    // ---- Frosted glass / progressive blur (Telegram-style bars) ----
+    implementation("dev.chrisbanes.haze:haze:1.3.1")
+    implementation("dev.chrisbanes.haze:haze-materials:1.3.1")
 
-    implementation(libs.coil.compose)
-    implementation(libs.coil.ktor)
+    // ---- QR encoding, for the party invite ----
+    // `core` only: the `android-core`/`zxing-android-embedded` artifacts bring
+    // a camera scanner and an Activity with it, and nothing here reads a code —
+    // a party is joined by tapping somebody else's link or typing six
+    // characters. This produces the bit matrix; the drawing is ours, in
+    // [com.doll.bloom.ui.components.QrCode], so the result is styled like
+    // the rest of the app rather than a stock black-and-white bitmap.
+    implementation("com.google.zxing:core:3.5.3")
 
-    implementation(libs.palette)
-    implementation(libs.monet)
-    runtimeOnly(projects.core.materialCompat)
+    // ---- Markdown rendering (release notes in the update dialog) ----
+    // Pure Compose, not an AndroidView wrapper — needed so the text composes
+    // correctly under the dialog's Haze blur.
+    implementation("com.halilibo.compose-richtext:richtext-ui-material3:0.20.0")
+    implementation("com.halilibo.compose-richtext:richtext-commonmark:0.20.0")
 
-    implementation(libs.exoplayer)
-    implementation(libs.exoplayer.workmanager)
-    implementation(libs.media3.session)
-    implementation(libs.media)
+    // ---- Innertube (YouTube Music) client: Ktor + kotlinx.serialization ----
+    // Ktor and serialization are held at InnerTubeX's versions (below) so the
+    // upgrade it forces is explicit rather than resolved behind our backs.
+    implementation("io.ktor:ktor-client-core:3.5.2")
+    implementation("io.ktor:ktor-client-okhttp:3.5.2")
+    implementation("io.ktor:ktor-client-content-negotiation:3.5.2")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
-    implementation(libs.workmanager)
-    implementation(libs.workmanager.ktx)
+    // ---- Discord Rich Presence: the gateway is a WebSocket, so Ktor needs the plugin ----
+    implementation("io.ktor:ktor-client-websockets:3.5.2")
 
-    implementation(libs.credentials)
-    implementation(libs.credentials.play)
+    // ---- YouTube stream extraction: live-benchmarked client catalog + cipher tiers ----
+    implementation("com.github.MetrolistGroup.innertubex:innertubex-android:v0.7.0")
 
-    implementation(libs.kotlin.coroutines)
-    implementation(libs.kotlin.immutable)
-    implementation(libs.kotlin.datetime)
+    // ---- Stream resolution: NewPipe solves YouTube's signature + `n` throttling ----
+    // Pinned to v0.26.3, not the newer v0.26.4: v0.26.4's player-JS parser fails with
+    // "Could not parse deobfuscation function" on the current player build, which blocks
+    // WEB_REMIX's ciphered formats entirely. v0.26.3 solves the same signatures cleanly
+    // against the same player JS — confirmed side by side against PixelMusic-ref, which
+    // pins v0.26.3 and doesn't hit the parse failure.
+    //
+    // Consumed as a stripped jar rather than as the module, so its own
+    // Utils.class does not reach dexing. See newPipeExtractorStripped above; the
+    // transitive dependencies the module would have brought are listed here
+    // because dropping its artifact drops them too. If the version changes,
+    // re-derive this list with
+    //   ./gradlew :app:dependencies --configuration prodReleaseRuntimeClasspath
+    implementation(files(newPipeExtractorStripped))
+    implementation("com.github.TeamNewPipe:nanojson:e9d656ddb49a412a5a0a5d5ef20ca7ef09549996")
+    implementation("org.jsoup:jsoup:1.22.2")
+    implementation("com.google.code.findbugs:jsr305:3.0.2")
+    implementation("com.google.protobuf:protobuf-javalite:4.35.0")
+    implementation("org.mozilla:rhino:1.8.1")
+    implementation("org.mozilla:rhino-engine:1.8.1")
 
-    implementation(libs.room)
-    ksp(libs.room.compiler)
+    // ---- Auth/session storage ----
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    implementation(libs.log4j)
-    implementation(libs.slf4j)
-    implementation(libs.logback)
+    // ---- JS module execution: QuickJS VM for style source plugins ----
+    // Held at InnerTubeX's version; the same VM runs QuickJsExecutor's module sources.
+    implementation("io.github.dokar3:quickjs-kt-android:1.0.14")
 
-    implementation(projects.providers.github)
-    implementation(projects.providers.innertube)
-    implementation(projects.providers.kugou)
-    implementation(projects.providers.lrclib)
-    implementation(projects.providers.piped)
-    implementation(projects.providers.sponsorblock)
-    implementation(projects.providers.translate)
-    implementation(projects.core.data)
-    implementation(projects.core.ui)
+    // ---- SMB file shares: pure-Java SMB2/3 client (listing + streaming) ----
+    implementation("com.hierynomus:smbj:0.15.0")
 
-    detektPlugins(libs.detekt.compose)
-    detektPlugins(libs.detekt.formatting)
+    // ---- Automix: on-device beat/downbeat model (Beat This!, MIT-licensed) ----
+    // The full android artifact, not onnxruntime-mobile: mobile only loads .ort
+    // files, which would put an offline conversion step between the model and
+    // the app for a saving that does not matter in a self-distributed APK.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // A real HTTP server for the addon tests. The addon protocol is entirely
+    // "what does this app send, and what does it do with what comes back", and
+    // a hand-rolled fake of the client would be a test of the fake. Pinned to
+    // the OkHttp version already on the runtime classpath.
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.3.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
 }
+
+/*
+ * A debug APK lands on the device uncompiled — `dumpsys package dexopt` reports
+ * it as run-from-apk — so every launch verifies the whole app's classes at
+ * runtime before a line of our code runs. Measured on the BlueStacks box, that
+ * was about two seconds of every cold start and most of why the dev build felt
+ * so much slower than a release one. `verify` is the cheapest filter that
+ * removes it (~15s once per install), and unlike `speed` it leaves the debug
+ * build debuggable exactly as before.
+ *
+ * Runs after `installDevDebug` from the command line. Android Studio's Run
+ * button deploys on its own and never reaches this task, so from there run
+ * `./gradlew verifyDevInstall` after installing.
+ */
+val verifyDevInstall = tasks.register("verifyDevInstall") {
+    group = "install"
+    description = "Pre-verifies the installed dev build on every connected device."
+    val adb = androidComponents.sdkComponents.adb
+    doLast {
+        val adbPath = adb.get().asFile.absolutePath
+        val serials = ProcessBuilder(adbPath, "devices").start()
+            .inputStream.bufferedReader().readLines()
+            .drop(1)
+            .mapNotNull { line -> line.split('\t').takeIf { it.size == 2 && it[1] == "device" }?.get(0) }
+        serials.forEach { serial ->
+            logger.lifecycle("verifyDevInstall: compiling com.doll.bloom on $serial")
+            ProcessBuilder(
+                adbPath, "-s", serial, "shell", "cmd", "package", "compile",
+                "-m", "verify", "-f", "com.doll.bloom",
+            ).inheritIO().start().waitFor()
+        }
+    }
+}
+tasks.matching { it.name == "installDevDebug" }.configureEach { finalizedBy(verifyDevInstall) }

@@ -1,9 +1,0 @@
-* Upgraded dependencies
-* Minor improvements
-* ViTune now allows voice commands from more platforms (Android Auto, WearOS, Google Assistant, Automotive OS)
-* Adjusted Chinese translations
-* Fixed an issue that caused the album art to be missing on some devices
-* Added Japanese translations
-* ViTune now officially supports Android 15
-* Fixed a crash when Google Fonts is not available
-* Added support for the Glyph Interface on Nothing devices, currently only supports glyphs in developer mode, unfortunately

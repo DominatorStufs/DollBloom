@@ -1,0 +1,54 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['backend/**', '.github/workflows/deploy-backend.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: go vet ./... && go test ./...
+        working-directory: backend
+
+  deploy:
+    if: ${{ vars.DOLLBLOOM_BACKEND_DEPLOY == 'true' }}
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to the Oracle VM
+        env:
+          KEY: ${{ secrets.ORACLE_DEPLOY_KEY }}
+          HOST: ${{ secrets.ORACLE_HOST }}
+          KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The key is pinned to /usr/local/sbin/dollbloom-deploy on the VM;
+          # pass the pushed branch through SSH_ORIGINAL_COMMAND for its allowlist.
+          ssh -i ~/.ssh/deploy deploy@"$HOST" "$GITHUB_REF_NAME"
+      - name: Health check
+        env:
+          HEALTH_URL: ${{ vars.DOLLBLOOM_HEALTH_URL }}
+        run: |
+          if [ -z "$HEALTH_URL" ]; then
+            echo "Set the DOLLBLOOM_HEALTH_URL repository variable to enable the backend health check."
+            exit 1
+          fi
+          for i in $(seq 1 12); do
+            curl -fsS "${HEALTH_URL%/}/healthz" && exit 0
+            sleep 5
+          done
+          exit 1

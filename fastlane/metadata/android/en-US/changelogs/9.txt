@@ -1,8 +1,0 @@
-* Fixed some minor inconsistencies
-* Fixed inconsistent behavior with hiding system bars in full screen mode in lyrics
-* Added audio focus to Settings --> Player --> Audio
-* Improved spacing, rounded corner consistency, dragging behavior and some other small UI tweaks
-* Added History as a built-in playlist
-* Added synchronized lyrics to local songs
-* Improved performance
-* Android 15 is now fully supported

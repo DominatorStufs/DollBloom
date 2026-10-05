@@ -2,252 +2,342 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-feature
-        android:name="android.software.leanback"
-        android:required="false" />
-
-    <uses-feature
-        android:name="android.hardware.touchscreen"
-        android:required="false" />
-
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Tells Wi-Fi from mobile data, so the matching quality ceiling applies. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Saving a track to Music outlives the screen it was asked from. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Touch feedback. The system's own haptics switch is honoured on top of
+         this, so granting it doesn't override a user who turned buzzing off. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
+      Asked for only when the output picker is first opened, and only on API 31+
+      where it exists. Without it a paired headset is listed by the audio
+      framework under a generic name rather than its own, which turns a list of
+      places to send the music into a list of things called "Bluetooth".
+      Everything else in the app works without it.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!--
+      In-app updates: handing a downloaded APK to the system installer. The
+      per-app "install unknown apps" switch is still the user's to flip; this
+      only lets the request reach the installer.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Reading local audio files across the device -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-    <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
-
-    <queries>
-        <intent>
-            <action android:name="android.media.action.DISPLAY_AUDIO_EFFECT_CONTROL_PANEL" />
-        </intent>
-
-        <intent>
-            <action android:name="android.intent.action.WEB_SEARCH" />
-        </intent>
-
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:mimeType="*/*" />
-        </intent>
-    </queries>
+    <!--
+      Only for API 28 and below. From 29 the app writes to the shared Music
+      folder through MediaStore, which grants access to the rows it created and
+      needs no permission at all — and this one stops being grantable there.
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
-        android:name=".MainApplication"
+        android:name=".DollBloomApplication"
         android:allowBackup="true"
-        android:banner="@mipmap/ic_banner"
-        android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
-        android:enableOnBackInvokedCallback="true"
-        android:hardwareAccelerated="true"
-        android:icon="@mipmap/ic_launcher_round"
-        android:label="${appName}"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="false"
-        android:theme="@style/Theme.ViTune.NoActionBar"
         android:appCategory="audio"
-        tools:ignore="UnusedAttribute">
+        android:usesCleartextTraffic="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DollBloom"
+        tools:targetApi="34">
 
+        <!--
+          One UI 7+ only routes an app's ongoing notification to Live
+          Notifications / the Now Bar if the app opts in here. Ignored by every
+          other OEM. Samsung additionally gates the non-media Live Notification
+          extras behind a per-package allowlist; the media card does not need it.
+        -->
+        <meta-data
+            android:name="com.samsung.android.support.ongoing_activity"
+            android:value="true" />
+
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+        <!-- Android Auto support -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!--
+          No android:screenOrientation here, deliberately: the app follows the
+          system's own auto-rotate setting on every device, phones included.
+
+          [android:configChanges] is the other half of that: without it, a
+          rotation the system now allows is still a full Activity restart,
+          which throws away every bit of in-memory Compose state along with
+          it — the sheet showing Now Playing, whether the lyrics or queue
+          panel was open, mid-scrub position, all of it — before any of this
+          screen's own responsive layout logic ever gets a chance to run.
+          Declaring these configurations here is what turns a rotation back
+          into an ordinary recomposition: the same Activity keeps running,
+          the same state survives, and the width- and height-aware branches
+          in NowPlayingScreen.kt decide the new layout.
+
+          uiMode is deliberately *not* in the list: a day/night change should
+          still recreate the Activity so the theme is rebuilt from resources.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:theme="@style/Theme.ViTune.NoActionBar"
-            android:windowSoftInputMode="adjustResize"
-            android:supportsPictureInPicture="true"
-            android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">
-
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.DollBloom">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <action android:name="android.intent.action.MUSIC_PLAYER" /> <!-- Not a real action, but apparently some apps query for this -->
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!--
+                  What makes the system call this a music app. "Play music" from
+                  the assistant, Android Auto's media list and the OEM pickers
+                  that put up "Complete action using" all ask for
+                  MAIN/APP_MUSIC by name and list whoever answers — a launcher
+                  entry alone is not enough, which is why DollBloom was missing
+                  from that dialog while every other player on the device was in
+                  it.
+                -->
+                <category android:name="android.intent.category.APP_MUSIC" />
+            </intent-filter>
 
+            <!--
+              The pre-Lollipop spelling of the same request. Deprecated, and
+              still what some OEM shortcuts and headset "open music" buttons
+              fire, so it costs one filter to be reachable from them too.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MUSIC_PLAYER" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.APP_MUSIC" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
 
+            <!--
+              "Play <something>" said out loud, and the search a media app is
+              handed when the assistant has words but no app in mind. An empty
+              query means "play music" with nothing said about what, which is
+              resumed rather than searched — see [MusicLink].
+            -->
             <intent-filter>
-                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
 
-            <intent-filter>
-                <action android:name="android.intent.action.SEARCH" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
+            <!--
+              YouTube Music links: a song, an album, a playlist or an artist,
+              tapped anywhere on the device.
 
-            <intent-filter android:autoVerify="false">
+              Not autoVerify. Verification is a claim to *own* these domains,
+              which DollBloom doesn't — and on Android 12+ an app that has
+              verified them (the YouTube Music app itself) takes the link
+              without a dialog either way. Declaring the filter is what puts
+              DollBloom in the "Open with" list once the user turns YT Music's
+              "Open supported links" off; the SEND filter below is the path
+              that always works, because sharing asks rather than routing.
+
+              One host, not a family of them. Every entry here becomes a line
+              the user has to tick under "Supported web addresses", so a
+              plausible-looking host that never appears in a real link (a `www.`
+              form of this one, say) is a line to tick by mistake instead of the
+              one that matters.
+
+              Schemes and paths still multiply out: every scheme × every path
+              prefix listed here is one accepted shape.
+            -->
+            <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
-
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-
-                <data
-                    android:host="music.youtube.com"
-                    android:pathPrefix="/playlist"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="www.youtube.com"
-                    android:pathPrefix="/playlist"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="m.youtube.com"
-                    android:pathPrefix="/playlist"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="music.youtube.com"
-                    android:pathPrefix="/watch"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="www.youtube.com"
-                    android:pathPrefix="/watch"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="m.youtube.com"
-                    android:pathPrefix="/watch"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="youtu.be"
-                    android:pathPrefix="/"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="music.youtube.com"
-                    android:pathPrefix="/channel"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="music.youtube.com"
-                    android:pathPrefix="/search"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="www.youtube.com"
-                    android:pathPrefix="/channel"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
-
-                <data
-                    android:host="m.youtube.com"
-                    android:pathPrefix="/c"
-                    android:scheme="https"
-                    tools:ignore="IntentFilterUniqueDataAttributes" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:host="music.youtube.com" />
+                <data android:pathPrefix="/watch" />
+                <data android:pathPrefix="/playlist" />
+                <data android:pathPrefix="/browse" />
+                <data android:pathPrefix="/channel" />
+                <data android:pathPrefix="/search" />
+            </intent-filter>
+            <!--
+              youtu.be short links, which are a bare video id and nothing else.
+              Kept in their own filter because the path there *is* the id, so it
+              can't share the path prefixes above.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:host="youtu.be" />
             </intent-filter>
 
+            <!-- Public Listen Together invites. autoVerify makes a tap open
+                 DollBloom directly once the domain publishes its assetlinks
+                 association for the production signing certificate. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="bitchord.kushagrasingh.in"
+                    android:pathPattern="/invite/......" />
+            </intent-filter>
+
+            <!-- Custom scheme for Listen Together invites on custom server deployments. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="dollbloom"
+                    android:host="party" />
+                <!-- Accept links created by the original BitChord party server too. -->
+                <data
+                    android:scheme="bitchord"
+                    android:host="party" />
+            </intent-filter>
+
+            <!--
+              Share → DollBloom, from YT Music's own share sheet or from
+              anywhere a link can be sent. The text is whatever the sending app
+              wrote around the URL, so the URL is picked out of it rather than
+              parsed whole.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
-
-            <intent-filter>
-                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
         </activity>
 
         <service
-            android:name=".service.PlayerService"
-            android:exported="false"
+            android:name=".playback.PlaybackService"
+            android:exported="true"
             android:foregroundServiceType="mediaPlayback">
-
             <intent-filter>
-                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
 
         <receiver
             android:name="androidx.media3.session.MediaButtonReceiver"
             android:exported="true">
-
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
 
+        <!--
+          Downloads. Not exported: it is started by the app and by its own
+          cancel action, and nothing outside has any business queueing work.
+        -->
         <service
-            android:name=".service.PlayerMediaBrowserService"
-            android:enabled="false"
-            android:exported="true"
-            tools:ignore="ExportedService">
+            android:name=".download.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
-            <intent-filter>
-                <action android:name="android.media.browse.MediaBrowserService" />
-            </intent-filter>
+        <!--
+          Home-screen widgets. Two providers so the picker lists a 2×2 and a 4×2,
+          both of which are the same widget resized — see MediaWidget.
 
+          Not exported, which is correct for a widget provider despite the
+          launcher being the one that talks to it: the system delivers
+          APPWIDGET_UPDATE to providers regardless, and the button PendingIntents
+          are sent with this app's own identity. Exporting them would only make
+          the update broadcast reachable by anything on the device.
+        -->
+        <receiver
+            android:name=".widget.MediaWidgetSquare"
+            android:exported="false"
+            android:label="@string/widget_square_label">
             <intent-filter>
-                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
-                <category android:name="android.intent.category.DEFAULT" />
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
-        </service>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_media_square" />
+        </receiver>
 
         <receiver
-            android:name=".service.PlayerService$NotificationDismissReceiver"
+            android:name=".widget.MediaWidgetWide"
+            android:exported="false"
+            android:label="@string/widget_wide_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_media_wide" />
+        </receiver>
+
+        <!-- The 4×1 capsule. Its own provider and layout; see MediaWidgetPill. -->
+        <receiver
+            android:name=".widget.MediaWidgetPill"
+            android:exported="false"
+            android:label="@string/widget_pill_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_media_pill" />
+        </receiver>
+
+        <!-- The transport buttons. Reached only by this app's own PendingIntents. -->
+        <receiver
+            android:name=".widget.MediaWidgetActions"
             android:exported="false" />
 
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
+        <!--
+          Hands the Replay poster to whichever app the user picks to send it
+          with. The authority is derived from the applicationId rather than
+          written out, so it stays aligned with the shared com.doll.bloom
+          package across dev/prod and debug/release variants.
 
-        <meta-data
-            android:name="com.google.android.gms.car.notification.SmallIcon"
-            android:resource="@drawable/app_icon" />
+          Not exported, and grantUriPermissions is the whole mechanism: the
+          receiving app gets a read grant that arrives with the intent, covers
+          one file (see @xml/file_paths) and expires with it.
 
-        <meta-data
-            android:name="NothingKey"
-            android:value="test" />
-
+          Also serves the downloaded update APK to the system installer
+          without it needing broad storage access — its own cache-only scope,
+          nothing else shared through it.
+        -->
         <provider
-            android:name="androidx.startup.InitializationProvider"
-            android:authorities="${applicationId}.androidx-startup"
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
             android:exported="false"
-            tools:node="merge">
-
+            android:grantUriPermissions="true">
             <meta-data
-                android:name="androidx.work.WorkManagerInitializer"
-                android:value="androidx.startup"
-                tools:node="remove" />
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
         </provider>
-
-        <service
-            android:name=".service.PrecacheService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync">
-
-            <intent-filter>
-                <action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </service>
     </application>
+
 </manifest>

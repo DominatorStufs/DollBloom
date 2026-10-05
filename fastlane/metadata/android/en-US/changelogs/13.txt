@@ -1,5 +1,0 @@
-* Added new translations
-* Made ViTune more recognizable as a music application to other apps
-* Subtle UI improvements
-* Minor bugfixes
-* Removed limit of 100 songs in online albums

@@ -1,7 +1,0 @@
-* UI improvements
-* Added 'auto open player' setting to Settings --> Appearance --> Player
-* Added 'clear cache' button to Settings --> Cache
-* Added list view to playlists tab
-* Accounted for YouTube Music's server changes, the player should work correctly again
-* Added repeat button to now playing notification
-* Added Hindi translations
