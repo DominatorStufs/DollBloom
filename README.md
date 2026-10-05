@@ -21,11 +21,6 @@
 
 </div>
 
-> [!NOTE]
-> DollBloom is a renamed derivative of the open-source BitChord project, released under GPLv3. Original author and third-party notices are retained in the source. The supplied DollBloom artwork is used for `Logo.png` and the launcher icons; `Banner.png` remains the upstream banner.
->
-> Every app build variant uses the Android application ID `com.doll.bloom`. Dev/prod and debug/release builds are not separate installs: installing one replaces the other. DollBloom installs separately from BitChord and will not update or replace an existing BitChord installation.
-
 > [!IMPORTANT]
 > DollBloom is not affiliated with, endorsed by, or connected to YouTube or Google in any way. Use it at your own discretion.
 
