@@ -26,15 +26,6 @@
 
 ---
 
-<div align="center">
-
-<img src="Banner.png" alt="Temporary upstream BitChord banner; DollBloom artwork is pending" width="100%" />
-
-<h1><a id="features"></a>Features</h1>
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
 
 #### Playback
 - **Search, browse and play** anything available on YouTube Music.
