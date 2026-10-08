@@ -4,6 +4,15 @@ name: Android CI
 # Start it from Actions -> "Android CI" -> "Run workflow".
 on:
   workflow_dispatch:
+    inputs:
+      version_code:
+        description: 'Version Code (numbers only, e.g., 1, 2, 3)'
+        required: true
+        type: string
+      version_number:
+        description: 'Version Number (e.g., 1.0, 1.0.1, 1.0.1-alpha)'
+        required: true
+        type: string
 
 jobs:
   build-prod-release:
@@ -24,6 +33,8 @@ jobs:
       run: |
         echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
         echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+        echo "VERSION_CODE=${{ github.event.inputs.version_code }}" >> local.properties
+        echo "VERSION_NAME=${{ github.event.inputs.version_number }}" >> local.properties
 
     - name: Unlock signing key from signing/release.lock (committed; no secrets needed)
       run: bash unlock-signing.sh
@@ -36,7 +47,7 @@ jobs:
         # this fails the build instead of shipping a differently-signed APK.
         EXPECTED="B2:E4:39:33:74:68:B6:50:4D:36:36:C0:0E:08:C8:BB:ED:30:7B:A2:25:D3:A9:54:E4:1D:2B:74:4F:B7:37:3B"
         ACTUAL=$(keytool -list -keystore dollbloom-release.jks -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
-          | grep "SHA-256" | sed 's/.*SHA-256): //' | tr 'a-f' 'A-F')
+          | grep "SHA-256" | sed 's/.*SHA-256: //' | tr 'a-f' 'A-F')
         echo "Keystore SHA-256: $ACTUAL"
         if [ "$ACTUAL" != "$EXPECTED" ]; then
           echo "::error::Signing key mismatch — refusing to build with a different key than shipped releases."
@@ -50,10 +61,19 @@ jobs:
       run: ./gradlew :shared:jvmTest :app:testProdReleaseUnitTest
 
     - name: Build Signed Prod Release APK
-      run: ./gradlew assembleProdRelease
+      env:
+        VERSION_CODE: ${{ github.event.inputs.version_code }}
+        VERSION_NAME: ${{ github.event.inputs.version_number }}
+      run: ./gradlew assembleProdRelease -PversionCode=$VERSION_CODE -PversionName=$VERSION_NAME
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: dollbloom-prod-release-signed
+        name: dollbloom-prod-release-signed-${{ github.event.inputs.version_number }}
         path: app/build/outputs/apk/prod/release/*.apk
+
+    - name: Uninstall old APK (if exists)
+      run: |
+        echo "Old version will be uninstalled when installing the new APK"
+        echo "Version Code: ${{ github.event.inputs.version_code }}"
+        echo "Version Name: ${{ github.event.inputs.version_number }}"
