@@ -7,9 +7,13 @@ name: Release
 #   version       -> the versionName stamped into the APK and the release
 #                    title. Letters, digits, dashes, dots: anything goes
 #                    ("2.0", "2.0-beta1", "dollbloom3" all fine).
-#   version-code  -> the integer versionCode. Android's package manager
-#                    compares it as a whole number, so this one input must
-#                    be digits only; the job below says so loudly if not.
+#   version-code  -> the integer versionCode Android uses to decide which
+#                    install is newer. Android itself only accepts a whole
+#                    number here, so the workflow is forgiving instead of
+#                    failing: if you type letters, it keeps just the digits,
+#                    and if there are no digits at all it picks a date-based
+#                    number automatically. A yellow warning says what it
+#                    chose; the run always continues.
 #
 # Re-running with a version whose release already exists does not fail and
 # does not create a duplicate: the existing release is edited and its APK
@@ -31,7 +35,7 @@ on:
         type: string
         default: "1.8"
       version-code:
-        description: "App version code: whole number, e.g. 27 (must rise for installs to update)"
+        description: "App version code: whole number, e.g. 27 (letters are auto-cleaned, run never fails on this)"
         required: true
         type: string
         default: "27"
@@ -57,15 +61,35 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Validate version code
+      - name: Prepare version inputs (letters + numbers both OK)
         run: |
-          case "${{ inputs.version-code }}" in
-            ''|*[!0-9]*)
-              echo "::error::version-code must be a whole number (digits only); got '${{ inputs.version-code }}'"
-              exit 1
-              ;;
-          esac
-          echo "Stamping versionName=${{ inputs.version }} versionCode=${{ inputs.version-code }}"
+          RAW_VERSION="${{ inputs.version }}"
+          RAW_CODE="${{ inputs.version-code }}"
+          # versionName: anything goes — just make it safe for a git tag.
+          VERSION="$(echo "$RAW_VERSION" | tr -d '[:space:]' | tr '/' '-')"
+          if [ -z "$VERSION" ]; then
+            VERSION="1.8"
+            echo "::warning::version was empty — using default 1.8."
+          fi
+          # versionCode: Android requires a whole number. Letters do NOT
+          # stop the run — digits are kept; with no digits at all a
+          # date-based number is used. Warnings explain what happened.
+          TRIMMED_CODE="$(echo "$RAW_CODE" | tr -d '[:space:]')"
+          CODE="$(echo "$RAW_CODE" | tr -cd '0-9')"
+          if [ "$CODE" != "$TRIMMED_CODE" ]; then
+            if [ -z "$CODE" ]; then
+              CODE="$(date -u +%y%m%d)"
+              echo "::warning::version-code '$RAW_CODE' has no digits — Android needs a whole number, so using auto number $CODE."
+            else
+              echo "::warning::version-code '$RAW_CODE' is not purely numeric — Android needs a whole number, so using just its digits: $CODE."
+            fi
+          fi
+          if [ -z "$CODE" ]; then
+            CODE="$(date -u +%y%m%d)"
+          fi
+          echo "dollbloom_version=$VERSION" >> "$GITHUB_ENV"
+          echo "dollbloom_version_code=$CODE" >> "$GITHUB_ENV"
+          echo "This run builds versionName=$VERSION versionCode=$CODE"
 
       - name: Write local.properties
         run: |
@@ -114,41 +138,41 @@ jobs:
       - name: Build signed phone + Android TV release APKs
         run: |
           ./gradlew assembleProdRelease assembleProdTvRelease \
-            -Pdollbloom.versionName="${{ inputs.version }}" \
-            -Pdollbloom.versionCode="${{ inputs.version-code }}"
+            -Pdollbloom.versionName="${{ env.dollbloom_version }}" \
+            -Pdollbloom.versionCode="${{ env.dollbloom_version_code }}"
 
       - name: Create the release, or replace its assets if it already exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${{ inputs.version }}"
+          TAG="v${{ env.dollbloom_version }}"
           APK_DIR=app/build/outputs/apk/prod/release
           TV_DIR=app/build/outputs/apk/prod/tvRelease
           # Televisions get the universal split under a name that says TV:
           # one file that installs on any box, whatever its ABI.
           TV_APK="$TV_DIR/app-prod-universal-tvRelease.apk"
-          TV_OUT="DollBloom-${{ inputs.version }}-TV-universal.apk"
+          TV_OUT="DollBloom-${{ env.dollbloom_version }}-TV-universal.apk"
           cp "$TV_APK" "$TV_OUT"
           ls -la "$APK_DIR" "$TV_DIR"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release $TAG already exists — editing it and replacing its APKs."
             gh release upload "$TAG" "$APK_DIR"/*.apk "$TV_OUT" --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit "$TAG" \
-              --title "DollBloom ${{ inputs.version }}" \
-              --notes "DollBloom ${{ inputs.version }} (versionCode ${{ inputs.version-code }}) — rebuilt $(date -u +%Y-%m-%dT%H:%MZ); assets replaced on the existing release. The -TV asset is the Android TV universal build." \
+              --title "DollBloom ${{ env.dollbloom_version }}" \
+              --notes "DollBloom ${{ env.dollbloom_version }} (versionCode ${{ env.dollbloom_version_code }}) — rebuilt $(date -u +%Y-%m-%dT%H:%MZ); assets replaced on the existing release. The -TV asset is the Android TV universal build." \
               --repo "$GITHUB_REPOSITORY"
           else
             echo "No release at $TAG yet — creating it."
             gh release create "$TAG" "$APK_DIR"/*.apk "$TV_OUT" \
-              --title "DollBloom ${{ inputs.version }}" \
-              --notes "DollBloom ${{ inputs.version }} (versionCode ${{ inputs.version-code }}). The -TV asset is the Android TV universal build." \
+              --title "DollBloom ${{ env.dollbloom_version }}" \
+              --notes "DollBloom ${{ env.dollbloom_version }} (versionCode ${{ env.dollbloom_version_code }}). The -TV asset is the Android TV universal build." \
               --repo "$GITHUB_REPOSITORY"
           fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dollbloom-${{ inputs.version }}-signed
+          name: dollbloom-${{ env.dollbloom_version }}-signed
           path: |
             app/build/outputs/apk/prod/release/*.apk
-            DollBloom-${{ inputs.version }}-TV-universal.apk
+            DollBloom-${{ env.dollbloom_version }}-TV-universal.apk
