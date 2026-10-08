@@ -204,7 +204,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="https"
-                    android:host="bitchord.kushagrasingh.in"
+                    android:host="dollbloom.kushagrasingh.in"
                     android:pathPattern="/invite/......" />
             </intent-filter>
 
@@ -215,10 +215,6 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="dollbloom"
-                    android:host="party" />
-                <!-- Accept links created by the original BitChord party server too. -->
-                <data
-                    android:scheme="bitchord"
                     android:host="party" />
             </intent-filter>
 
@@ -318,8 +314,9 @@
         <!--
           Hands the Replay poster to whichever app the user picks to send it
           with. The authority is derived from the applicationId rather than
-          written out, so it stays aligned with the shared com.doll.bloom
-          package across dev/prod and debug/release variants.
+          written out, because the dev and prod flavours are two packages that
+          can be installed side by side — a fixed authority would make the
+          second install fail outright with INSTALL_FAILED_CONFLICTING_PROVIDER.
 
           Not exported, and grantUriPermissions is the whole mechanism: the
           receiving app gets a read grant that arrives with the intent, covers
@@ -338,6 +335,11 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Where the Cast framework asks how this app wants to cast. -->
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.doll.bloom.playback.cast.CastOptionsProvider" />
     </application>
 
 </manifest>

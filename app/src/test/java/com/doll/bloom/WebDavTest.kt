@@ -1,5 +1,6 @@
 package com.doll.bloom
 
+import com.doll.bloom.data.webdav.update
 import coil3.network.NetworkHeaders
 import com.doll.bloom.data.webdav.WebDavAuth
 import com.doll.bloom.data.webdav.WebDavClient

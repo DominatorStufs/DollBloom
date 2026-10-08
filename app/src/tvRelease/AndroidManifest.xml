@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Android TV half of the manifest, merged on top of the main one for the
+  tvRelease build type only — phone builds never see any of this.
+
+  Everything here is additive: the main manifest's LAUNCHER + APP_MUSIC
+  filter stays, and this overlay adds the leanback filter beside it, so the
+  same MainActivity answers the TV home row as well as the phone drawer.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      A television's home screen is the leanback launcher, and it lists only
+      apps whose MAIN activity also accepts LEANBACK_LAUNCHER. Declared
+      optional rather than required so nothing — not a launcher, not a store
+      listing — ever treats the TV build as unable to run anywhere else.
+    -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <!--
+      Televisions have no touchscreen and say so in their hardware profile;
+      an app that stays silent about it is assumed to need one and gets
+      filtered off the TV entirely. This line is what makes the app
+      installable and visible there at all.
+    -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <application android:banner="@drawable/tv_banner">
+        <!--
+          The 320x180 banner is what the TV home row shows in place of a
+          launcher icon; without one the row falls back to a stretched
+          square icon. The artwork itself lives in this source set at
+          res/drawable-xhdpi/tv_banner.png.
+        -->
+        <activity
+            android:name="com.doll.bloom.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,9 +1,8 @@
 name: Deploy backend
 
+# Manual only: deploy by hand from Actions -> "Deploy backend" -> "Run workflow".
+# No push to backend/ triggers it on its own.
 on:
-  push:
-    branches: [main, master]
-    paths: ['backend/**', '.github/workflows/deploy-backend.yml']
   workflow_dispatch:
 
 concurrency:
@@ -23,7 +22,6 @@ jobs:
         working-directory: backend
 
   deploy:
-    if: ${{ vars.DOLLBLOOM_BACKEND_DEPLOY == 'true' }}
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -36,19 +34,12 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          # The key is pinned to /usr/local/sbin/dollbloom-deploy on the VM;
-          # pass the pushed branch through SSH_ORIGINAL_COMMAND for its allowlist.
-          ssh -i ~/.ssh/deploy deploy@"$HOST" "$GITHUB_REF_NAME"
+          # The key is pinned to /usr/local/sbin/dollbloom-deploy on the VM.
+          ssh -i ~/.ssh/deploy deploy@"$HOST"
       - name: Health check
-        env:
-          HEALTH_URL: ${{ vars.DOLLBLOOM_HEALTH_URL }}
         run: |
-          if [ -z "$HEALTH_URL" ]; then
-            echo "Set the DOLLBLOOM_HEALTH_URL repository variable to enable the backend health check."
-            exit 1
-          fi
           for i in $(seq 1 12); do
-            curl -fsS "${HEALTH_URL%/}/healthz" && exit 0
+            curl -fsS https://api.bitchord.kushagrasingh.in/healthz && exit 0
             sleep 5
           done
           exit 1

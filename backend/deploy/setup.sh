@@ -2,14 +2,17 @@
 # One-shot installer for the Listen Together server on an Oracle Cloud
 # (or any Ubuntu 22.04/24.04) VM. Safe to re-run: it rebuilds and restarts.
 #
-#   sudo DOMAIN=jam.example.com bash deploy/setup.sh
+#   sudo DOMAIN=jam.dollbloom.kushagrasingh.in bash deploy/setup.sh
+#
+# First run on a fresh VM also takes DEPLOY_PUBKEY (the public half of the
+# GitHub Actions deploy key) to create the restricted `deploy` user.
 #
 # Run it from the backend/ directory of a checkout on the VM. The DNS A record
 # for $DOMAIN must already point at this VM, or Caddy cannot get a certificate.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-DOMAIN="${DOMAIN:?set DOMAIN, e.g. DOMAIN=jam.example.com}"
+DOMAIN="${DOMAIN:?set DOMAIN, e.g. DOMAIN=jam.dollbloom.kushagrasingh.in}"
 GO_VERSION="${GO_VERSION:-1.27.0}"
 BACKEND_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -42,9 +45,12 @@ install -m 644 "$BACKEND_DIR/deploy/dollbloom-jam.service" /etc/systemd/system/d
 systemctl daemon-reload
 systemctl enable dollbloom-jam
 systemctl restart dollbloom-jam
-install -m 644 "$BACKEND_DIR/deploy/dollbloom-keepalive.service" /etc/systemd/system/dollbloom-keepalive.service
-systemctl daemon-reload
-systemctl enable --now dollbloom-keepalive
+# The CPU keepalive burner is retired; clean it off VMs that still have it.
+if [ -f /etc/systemd/system/dollbloom-keepalive.service ]; then
+  systemctl disable --now dollbloom-keepalive || true
+  rm -f /etc/systemd/system/dollbloom-keepalive.service
+  systemctl daemon-reload
+fi
 
 echo "== caddy (HTTPS + WebSocket proxy)"
 if ! command -v caddy >/dev/null; then
@@ -61,6 +67,17 @@ fi
 echo "== deploy hook"
 echo "$DOMAIN" > /etc/dollbloom-domain
 install -m 755 "$BACKEND_DIR/deploy/dollbloom-deploy.sh" /usr/local/sbin/dollbloom-deploy
+
+if [ -n "${DEPLOY_PUBKEY:-}" ]; then
+  echo "== deploy user"
+  # The GitHub Actions key may only run the deploy hook (forced command).
+  id deploy >/dev/null 2>&1 || useradd --create-home --shell /bin/bash deploy
+  install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+  printf 'command="sudo /usr/local/sbin/dollbloom-deploy",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s\n' "$DEPLOY_PUBKEY" > /home/deploy/.ssh/authorized_keys
+  chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 600 /home/deploy/.ssh/authorized_keys
+  echo 'deploy ALL=(root) NOPASSWD: /usr/local/sbin/dollbloom-deploy' > /etc/sudoers.d/dollbloom-deploy
+  chmod 440 /etc/sudoers.d/dollbloom-deploy && visudo -cf /etc/sudoers.d/dollbloom-deploy
+fi
 
 echo "== firewall"
 # Oracle's Ubuntu images ship an iptables REJECT rule that blocks everything

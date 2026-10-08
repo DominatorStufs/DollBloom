@@ -22,9 +22,9 @@ When contributing:
 ## Development Setup
 The project requires the following tools:
 - **JDK**: Java Development Kit 17 (Eclipse Temurin 17 recommended).
-- **Android SDK**: `compileSdk = 37`, `targetSdk = 36`, `minSdk = 26`.
+- **Android SDK**: `compileSdk = 36`, `targetSdk = 36`, `minSdk = 26`.
 - **C/C++ NDK & CMake**: CMake 3.22.1+ and Android NDK (for native audio DSP components configured under `app/src/main/cpp`).
-- **Listen Together Backend (Optional)**: Go 1.27+ if developing or testing the party server (`backend/`).
+- **Listen Together Backend (Optional)**: Go 1.22+ if developing or testing the party server (`backend/`).
 
 ## Build and Test Commands
 Run Gradle commands from the repository root.

@@ -1,4 +1,4 @@
-module github.com/DominatorStufs/DollBloom/backend
+module github.com/KabirSinghBhatia/DollBloom/backend
 
 go 1.27.0
 

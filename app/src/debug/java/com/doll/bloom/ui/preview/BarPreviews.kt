@@ -110,9 +110,9 @@ private val PreviewSong = Song(
 
 private val PreviewTabs = listOf(
     BottomTab("Play", DollBloomIcons.Play),
-    BottomTab("Explore", DollBloomIcons.Explore),
-    BottomTab("Library", DollBloomIcons.Library),
-    BottomTab("Search", DollBloomIcons.Search),
+    BottomTab("Explore", DollBloomIcons.TabExplore),
+    BottomTab("Library", DollBloomIcons.TabLibrary),
+    BottomTab("Search", DollBloomIcons.TabSearch),
 )
 
 /**

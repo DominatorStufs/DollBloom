@@ -1,269 +1,59 @@
-name: Android Release Build
-run-name: DollBloom ${{ inputs.version_name }} (#${{ inputs.version_code }})
+name: Android CI
 
+# Manual only, on purpose: nothing here runs on push or pull request.
+# Start it from Actions -> "Android CI" -> "Run workflow".
 on:
   workflow_dispatch:
-    inputs:
-      version_code:
-        description: "App version code (positive integer; use a higher code for a new release)"
-        required: true
-        type: string
-      version_name:
-        description: "App version name (for example 1.8 or 1.8-beta2)"
-        required: true
-        type: string
-
-permissions:
-  contents: write
 
 jobs:
   build-prod-release:
-    name: Build and publish signed production universal APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: "17"
-          distribution: temurin
-          cache: gradle
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
 
-      - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v4
+    - name: Write local.properties
+      run: |
+        echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+        echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
 
-      - name: Install Android SDK API 37 and native build tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          if [[ -z "$SDK_ROOT" || ! -d "$SDK_ROOT" ]]; then
-            echo "::error::Android SDK root is missing after setup-android."
-            exit 1
-          fi
+    - name: Unlock signing key from signing/release.lock (committed; no secrets needed)
+      run: bash unlock-signing.sh
 
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [[ -z "$SDKMANAGER" ]]; then
-            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' -print -quit 2>/dev/null || true)"
-          fi
-          if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
-            echo "::error::sdkmanager was not found. The setup-android step did not install command-line tools."
-            exit 1
-          fi
-          echo "Using sdkmanager at: $SDKMANAGER"
+    - name: Verify this is the pinned DollBloom release key
+      run: |
+        # Every build — today's and every future feature update — must be
+        # signed with the one DollBloom release key, or an update will not
+        # install over an existing install. If the secret is ever swapped,
+        # this fails the build instead of shipping a differently-signed APK.
+        EXPECTED="B2:E4:39:33:74:68:B6:50:4D:36:36:C0:0E:08:C8:BB:ED:30:7B:A2:25:D3:A9:54:E4:1D:2B:74:4F:B7:37:3B"
+        ACTUAL=$(keytool -list -keystore dollbloom-release.jks -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+          | grep "SHA-256" | sed 's/.*SHA-256): //' | tr 'a-f' 'A-F')
+        echo "Keystore SHA-256: $ACTUAL"
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+          echo "::error::Signing key mismatch — refusing to build with a different key than shipped releases."
+          exit 1
+        fi
 
-          "$SDKMANAGER" --channel=3 --sdk_root="$SDK_ROOT" \
-            "platforms;android-37.0" \
-            "build-tools;36.0.0" \
-            "platform-tools" \
-            "cmake;3.22.1" \
-            "ndk;27.2.12479018"
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
 
-          PLATFORM_37="$SDK_ROOT/platforms/android-37.0"
-          if [[ ! -f "$PLATFORM_37/android.jar" ]]; then
-            echo "::error::Android SDK API 37.0 did not install correctly (android.jar is missing)."
-            exit 1
-          fi
+    - name: Unit tests
+      run: ./gradlew :shared:jvmTest :app:testProdReleaseUnitTest
 
-          # AGP resolves compileSdk=37 through platforms/android-37. Use a real
-          # directory alias (hard-linked files), not a symlink; the symlink form
-          # was not resolved by Gradle on this project.
-          PLATFORM_37_ALIAS="$SDK_ROOT/platforms/android-37"
-          if [[ -L "$PLATFORM_37_ALIAS" ]]; then
-            rm -f "$PLATFORM_37_ALIAS"
-          fi
-          if [[ ! -f "$PLATFORM_37_ALIAS/android.jar" ]]; then
-            if [[ -e "$PLATFORM_37_ALIAS" ]]; then
-              echo "::error::Unexpected existing SDK path without android.jar: $PLATFORM_37_ALIAS"
-              exit 1
-            fi
-            cp -al "$PLATFORM_37" "$PLATFORM_37_ALIAS"
-          fi
+    - name: Build Signed Prod Release APK
+      run: ./gradlew assembleProdRelease
 
-      - name: Validate version inputs
-        env:
-          APP_VERSION_CODE: ${{ inputs.version_code }}
-          APP_VERSION_NAME: ${{ inputs.version_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$APP_VERSION_CODE" =~ ^[1-9][0-9]{0,9}$ ]]; then
-            echo "::error::Version code must be a positive whole number without leading zeroes."
-            exit 1
-          fi
-          if (( 10#$APP_VERSION_CODE > 2100000000 )); then
-            echo "::error::Version code must not exceed Android's 2100000000 limit."
-            exit 1
-          fi
-          VERSION_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9 ._+-]*$'
-          if [[ ${#APP_VERSION_NAME} -gt 64 || ! "$APP_VERSION_NAME" =~ $VERSION_NAME_PATTERN ]]; then
-            echo "::error::Version name must be 1-64 characters, start with a letter or number, and contain only letters, numbers, spaces, dots, underscores, pluses, or hyphens."
-            exit 1
-          fi
-
-      - name: Write local build settings
-        env:
-          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
-          LISTEN_TOGETHER_SERVER: ${{ vars.LISTEN_TOGETHER_SERVER }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            printf 'LASTFM_API_KEY=%s\n' "$LASTFM_API_KEY"
-            printf 'LASTFM_SECRET=%s\n' "$LASTFM_SECRET"
-          } > local.properties
-          if [[ -n "$LISTEN_TOGETHER_SERVER" ]]; then
-            printf 'LISTEN_TOGETHER_SERVER=%s\n' "$LISTEN_TOGETHER_SERVER" >> local.properties
-          fi
-
-      - name: Prepare production signing config
-        id: signing
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          MISSING_SECRETS=()
-          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [[ -z "${!name}" ]]; then
-              MISSING_SECRETS+=("$name")
-            fi
-          done
-          if (( ${#MISSING_SECRETS[@]} > 0 )); then
-            echo "::error::Missing required Actions secrets: ${MISSING_SECRETS[*]}. Add them under Settings > Secrets and variables > Actions using the original production signing key."
-            exit 1
-          fi
-
-          KEYSTORE_PATH="$RUNNER_TEMP/dollbloom-release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-          chmod 600 "$KEYSTORE_PATH"
-          cat > keystore.properties <<EOF
-          storeFile=${KEYSTORE_PATH}
-          storeType=JKS
-          storePassword=${KEYSTORE_PASSWORD}
-          keyAlias=${KEY_ALIAS}
-          keyPassword=${KEY_PASSWORD}
-          EOF
-          chmod 600 keystore.properties
-
-          # Check that the store, passwords, and alias can access the private key.
-          if ! keytool -certreq -keystore "$KEYSTORE_PATH" \
-            -storetype JKS -alias "$KEY_ALIAS" \
-            -storepass:env KEYSTORE_PASSWORD -keypass:env KEY_PASSWORD \
-            -file "$RUNNER_TEMP/dollbloom-signing-check.csr" >/dev/null 2>&1; then
-            echo "::error::The keystore, passwords, or key alias do not match."
-            exit 1
-          fi
-          rm -f "$RUNNER_TEMP/dollbloom-signing-check.csr"
-          echo "signed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Grant execute permission for Gradle wrapper
-        run: chmod +x gradlew
-
-      - name: Build signed production release APK
-        env:
-          APP_VERSION_CODE: ${{ inputs.version_code }}
-          APP_VERSION_NAME: ${{ inputs.version_name }}
-        run: |
-          ./gradlew assembleProdRelease \
-            "-PappVersionCode=$APP_VERSION_CODE" \
-            "-PappVersionName=$APP_VERSION_NAME"
-
-      - name: Verify universal APK size (maximum 100 MB)
-        id: verify-size
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t UNIVERSAL_APKS < <(find app/build/outputs/apk/prod/release -type f -name '*universal*.apk' -print | sort)
-          if (( ${#UNIVERSAL_APKS[@]} != 1 )); then
-            echo "::error::Expected one universal APK; found ${#UNIVERSAL_APKS[@]}."
-            find app/build/outputs/apk/prod/release -type f -name '*.apk' -print | sort
-            exit 1
-          fi
-
-          APK_NAME="DollBloom-prod-release-universal.apk"
-          mkdir -p universal-artifact
-          cp "${UNIVERSAL_APKS[0]}" "universal-artifact/$APK_NAME"
-          APK_BYTES=$(stat -c '%s' "universal-artifact/$APK_NAME")
-          APK_MB=$(awk -v bytes="$APK_BYTES" 'BEGIN { printf "%.2f", bytes / 1000000 }')
-          echo "::notice::Universal APK size: ${APK_MB} MB (decimal)."
-          if (( APK_BYTES > 100000000 )); then
-            echo "::error::The universal APK is ${APK_MB} MB, over the 100 MB limit; refusing to publish it."
-            exit 1
-          fi
-          echo "apk_path=universal-artifact/$APK_NAME" >> "$GITHUB_OUTPUT"
-          ls -lh "universal-artifact/$APK_NAME"
-
-      - name: Upload universal APK as a workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dollbloom-prod-universal-${{ inputs.version_name }}-${{ inputs.version_code }}
-          path: ${{ steps.verify-size.outputs.apk_path }}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Create or update GitHub Release and replace its APK
-        if: ${{ steps.signing.outputs.signed == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APP_VERSION_CODE: ${{ inputs.version_code }}
-          APP_VERSION_NAME: ${{ inputs.version_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK_FILE="universal-artifact/DollBloom-prod-release-universal.apk"
-          if [[ ! -s "$APK_FILE" ]]; then
-            echo "::error::The signed universal APK is missing."
-            exit 1
-          fi
-
-          # Reuse a release for the same version name. Prefer lowercase v-tags,
-          # but recognize existing uppercase V-tags and unprefixed tags too.
-          TAG_VERSION="$(printf '%s' "$APP_VERSION_NAME" | tr ' ' '-' | sed -E 's/\.\.+/./g; s/\.$//')"
-          if [[ -z "$TAG_VERSION" ]]; then
-            echo "::error::The version name cannot produce a valid release tag."
-            exit 1
-          fi
-          RELEASE_TITLE="DollBloom ${APP_VERSION_NAME}"
-          RELEASE_NOTES="$(printf 'DollBloom production release.\n\nVersion name: %s\nVersion code: %s\n\nThe signed universal APK is attached below. Re-running with the same version name updates this release and replaces the APK asset.\n' "$APP_VERSION_NAME" "$APP_VERSION_CODE")"
-          RELEASE_TAG=""
-          for CANDIDATE_TAG in "v${TAG_VERSION}" "V${TAG_VERSION}" "$TAG_VERSION"; do
-            if git check-ref-format "refs/tags/${CANDIDATE_TAG}" && \
-              gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              RELEASE_TAG="$CANDIDATE_TAG"
-              break
-            fi
-          done
-
-          if [[ -n "$RELEASE_TAG" ]]; then
-            echo "::notice::Release ${RELEASE_TAG} already exists; updating it."
-            gh release edit "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$RELEASE_TITLE" \
-              --notes "$RELEASE_NOTES"
-          else
-            RELEASE_TAG="v${TAG_VERSION}"
-            if ! git check-ref-format "refs/tags/${RELEASE_TAG}"; then
-              echo "::error::Generated release tag is invalid: ${RELEASE_TAG}"
-              exit 1
-            fi
-            echo "::notice::Creating release ${RELEASE_TAG}."
-            gh release create "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "$RELEASE_TITLE" \
-              --notes "$RELEASE_NOTES"
-          fi
-
-          # --clobber replaces the asset with the same filename on an existing release.
-          gh release upload "$RELEASE_TAG" "$APK_FILE" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dollbloom-prod-release-signed
+        path: app/build/outputs/apk/prod/release/*.apk

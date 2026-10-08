@@ -230,14 +230,20 @@ To keep memory, bandwidth, and latency strictly bounded:
   alongside indices. If concurrent network lag (e.g. 800 ms mobile latency) or
   a track completion shifts indices, the server resolves `fromIndex` from the
   track's `videoId` under the party lock, preventing misplaced drops.
+- **Repeated tracks**: the queue keeps its history, so it can hold the playing
+  track twice. `setQueue` keeps the sender's `queueIndex` when it names the
+  playing track, and `setTrack` without one takes the copy nearest the current
+  index (the next slot first) rather than the first copy from the top.
+- **AutoPlay de-duplication**: `queueAdd` drops `fromAutoplay` tracks already
+  waiting after the current one (or repeated in the batch). A batch that is
+  entirely such tracks succeeds without changing the queue. Hand-queued tracks
+  are never filtered.
 
 ## Deploying to Oracle Cloud (Always Free)
 
-The original upstream BitChord deployment runs at
-`https://api.bitchord.kushagrasingh.in`: one Always Free `VM.Standard.E2.1.Micro`
-(1 OCPU, 1 GB) on Ubuntu 24.04 in ap-mumbai-1, with Caddy in front for HTTPS
-and WebSockets. That domain is owned by the upstream project, not DollBloom;
-use a domain you control when deploying this fork. Files are in `deploy/`.
+This is what runs `https://api.bitchord.kushagrasingh.in`: one Always Free
+`VM.Standard.E2.1.Micro` (1 OCPU, 1 GB) on Ubuntu 24.04 in ap-mumbai-1, with
+Caddy in front for HTTPS and WebSockets. Files are in `deploy/`.
 
 1. **Create the VM**: Compute -> Instances -> Create. Image *Canonical Ubuntu
    24.04*, shape *VM.Standard.E2.1.Micro* (tagged Always Free), public subnet,
@@ -250,7 +256,7 @@ use a domain you control when deploying this fork. Files are in `deploy/`.
 4. **Install** (from a copy of `backend/` on the VM):
 
    ```sh
-   sudo DOMAIN=jam.example.com bash deploy/setup.sh
+   sudo DOMAIN=api.bitchord.kushagrasingh.in bash deploy/setup.sh
    ```
 
    It installs Go, builds the server into `/opt/dollbloom-jam`, runs it as the

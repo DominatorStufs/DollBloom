@@ -42,6 +42,12 @@ object AppUpdateChecker {
 
     private const val CACHE_SUBDIR = "updates"
 
+    /** Marks the Android TV universal in a release's asset list ("-TV-universal"). */
+    private const val TV_ASSET_MARKER = "-TV"
+
+    /** True in the tvRelease build type; picks this device's side of the asset list. */
+    private val isTvBuild: Boolean = BuildConfig.BUILD_TYPE == "tvRelease"
+
     private const val LATEST_RELEASE_URL =
         "https://api.github.com/repos/DominatorStufs/DollBloom/releases/latest"
 
@@ -100,15 +106,31 @@ object AppUpdateChecker {
      * page as before.
      */
     private fun apkAssetUrl(release: JsonObject): String? = runCatching {
-        release["assets"]?.jsonArray
+        val assets = release["assets"]?.jsonArray
             ?.mapNotNull { it as? JsonObject }
-            ?.firstOrNull { asset ->
-                asset["name"]?.jsonPrimitive?.contentOrNull?.endsWith(".apk", ignoreCase = true) == true &&
-                    asset["state"]?.jsonPrimitive?.contentOrNull == "uploaded"
+            ?.filter { asset ->
+                asset["state"]?.jsonPrimitive?.contentOrNull == "uploaded" &&
+                    asset["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        .endsWith(".apk", ignoreCase = true)
+            } ?: return@runCatching null
+        // The TV universal and the phone APKs share one release asset list;
+        // each device wants only its own kind, or a television would
+        // "update" itself onto the phone cut and lose its leanback launcher
+        // entry (and a phone would grab the TV universal).
+        val pool = assets.filter { asset ->
+            asset["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                .contains(TV_ASSET_MARKER) == isTvBuild
+        }.ifEmpty { assets }
+        val pick = pool.firstOrNull { asset ->
+            val name = asset["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            Build.SUPPORTED_ABIS.any { abi -> name.contains(abi) }
+        }
+            ?: pool.firstOrNull { asset ->
+                asset["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    .contains("universal", ignoreCase = true)
             }
-            ?.get("browser_download_url")
-            ?.jsonPrimitive
-            ?.contentOrNull
+            ?: pool.firstOrNull()
+        pick?.get("browser_download_url")?.jsonPrimitive?.contentOrNull
     }.getOrNull()
 
     /**
@@ -211,8 +233,13 @@ object AppUpdateChecker {
     private data class ParsedVersion(val parts: List<Int>, val isPreRelease: Boolean)
 
     private fun parseVersion(raw: String): ParsedVersion {
-        val dash = raw.indexOf('-')
-        val base = if (dash >= 0) raw.substring(0, dash) else raw
+        // "-TV" is a device marker, not a pre-release marker: 1.8-TV *is* the
+        // 1.8 release, on a television. Strip it before the dash logic or a
+        // TV install reads as a beta of 1.8 and chases its own release tag
+        // forever without ever landing on a newer number.
+        val version = raw.removeSuffix(TV_ASSET_MARKER)
+        val dash = version.indexOf('-')
+        val base = if (dash >= 0) version.substring(0, dash) else version
         return ParsedVersion(base.split(".").map { it.toIntOrNull() ?: 0 }, dash >= 0)
     }
 

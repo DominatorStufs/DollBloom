@@ -143,8 +143,9 @@ class DiscordRPC(
 
     /**
      * The name Discord puts after "Listening to". Taken from the app's own
-     * label so it tracks a rename, with the dev flavor's display suffix dropped
-     * so every build presents the same name on Discord.
+     * label so it tracks a rename, with the dev flavor's suffix dropped —
+     * a side-by-side dev install should still look like dollbloom to everyone
+     * else on Discord.
      */
     private fun appName(): String =
         context.getString(R.string.app_name).removeSuffix(" Dev")
@@ -182,7 +183,7 @@ class DiscordRPC(
          * APK — a `res/` drawable has no address the presence can carry.
          */
         private const val FALLBACK_ART_URL =
-            "https://raw.githubusercontent.com/DominatorStufs/DollBloom/master/Logo.png"
+            "https://raw.githubusercontent.com/DominatorStufs/DollBloom/main/app/src/main/ic_launcher-playstore.png"
 
         fun watchUrl(song: Song): String =
             "https://music.youtube.com/watch?v=${song.videoId}"

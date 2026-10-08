@@ -1,17 +1,18 @@
-# DollBloom Maintainers
+# Maintainers
+
+This document lists the maintainers responsible for DollBloom.
 
 | Maintainer | GitHub | Responsibilities |
 |---|---|---|
-| DominatorStufs | [@DominatorStufs](https://github.com/DominatorStufs) | Maintains the DollBloom fork and its releases |
-| Kushagra Singh | [@kushagrasinghx](https://github.com/kushagrasinghx) | Creator and maintainer of the original BitChord project; upstream attribution |
+| DominatorStufs | [@DominatorStufs](https://github.com/DominatorStufs) | Project maintainer: core architecture, release management, and PR reviews |
 
 ## Responsibilities
 
-DollBloom maintainers oversee this fork's direction, repository maintenance, reviews, and releases. The upstream project and contributor notices are retained in the source history and applicable files.
+Maintainers oversee project direction, repository maintenance, review and merging of contributions, and release management.
 
-## Imported contributor history
+## Contributors
 
-The contributor list below is inherited from the original BitChord repository history. These credits refer to contributions to the upstream project; DollBloom-specific contributions will be reflected as they are made.
+This list is automatically generated from GitHub repository contributor data.
 
 <!-- BEGIN CONTRIBUTORS -->
 - [@kushagrasinghx](https://github.com/kushagrasinghx)

@@ -1,9 +1,8 @@
 name: Update Contributors
 
+# Manual only — refresh from Actions -> "Update Contributors" -> "Run workflow".
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 0'
 
 permissions:
   contents: write

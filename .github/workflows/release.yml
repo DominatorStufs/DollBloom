@@ -1,0 +1,136 @@
+name: Release
+
+# Manual only: a release is cut by hand from Actions -> "Release" ->
+# "Run workflow", filling in the two inputs below. No tag push, no commit,
+# no pull request can trigger it.
+#
+#   version       -> the versionName stamped into the APK and the release
+#                    title. Letters, digits, dashes, dots: anything goes
+#                    ("2.0", "2.0-beta1", "dollbloom3" all fine).
+#   version-code  -> the integer versionCode. Android's package manager
+#                    compares it as a whole number, so this one input must
+#                    be digits only; the job below says so loudly if not.
+#
+# Re-running with a version whose release already exists does not fail and
+# does not create a duplicate: the existing release is edited and its APK
+# assets are replaced (clobbered) with the fresh build, so an install on
+# the same version simply gets the new build.
+#
+# One run produces both cuts of the app:
+#   - the phone/tablet APKs (per-ABI splits plus universal) from
+#     assembleProdRelease, and
+#   - the Android TV build from assembleProdTvRelease, whose versionName
+#     carries a "-TV" suffix and whose universal split is uploaded as
+#     DollBloom-<version>-TV-universal.apk.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version (versionName): letters + numbers allowed, e.g. 1.8 or 2.0-beta1"
+        required: true
+        type: string
+        default: "1.8"
+      version-code:
+        description: "App version code: whole number, e.g. 27 (must rise for installs to update)"
+        required: true
+        type: string
+        default: "27"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  android-release:
+    name: Android · signed APK + GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Validate version code
+        run: |
+          case "${{ inputs.version-code }}" in
+            ''|*[!0-9]*)
+              echo "::error::version-code must be a whole number (digits only); got '${{ inputs.version-code }}'"
+              exit 1
+              ;;
+          esac
+          echo "Stamping versionName=${{ inputs.version }} versionCode=${{ inputs.version-code }}"
+
+      - name: Write local.properties
+        run: |
+          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+
+      - name: Unlock signing key from signing/release.lock (committed; no secrets needed)
+        run: bash unlock-signing.sh
+
+      - name: Verify this is the pinned DollBloom release key
+        run: |
+          # Every build — today's and every future feature update — must be
+          # signed with the one DollBloom release key, or an update will not
+          # install over an existing install. If the secret is ever swapped,
+          # this fails the build instead of shipping a differently-signed APK.
+          EXPECTED="B2:E4:39:33:74:68:B6:50:4D:36:36:C0:0E:08:C8:BB:ED:30:7B:A2:25:D3:A9:54:E4:1D:2B:74:4F:B7:37:3B"
+          ACTUAL=$(keytool -list -keystore dollbloom-release.jks -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            | grep "SHA-256" | sed 's/.*SHA-256): //' | tr 'a-f' 'A-F')
+          echo "Keystore SHA-256: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Signing key mismatch — refusing to release with a different key than shipped builds."
+            exit 1
+          fi
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build signed phone + Android TV release APKs
+        run: |
+          ./gradlew assembleProdRelease assembleProdTvRelease \
+            -Pdollbloom.versionName="${{ inputs.version }}" \
+            -Pdollbloom.versionCode="${{ inputs.version-code }}"
+
+      - name: Create the release, or replace its assets if it already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          APK_DIR=app/build/outputs/apk/prod/release
+          TV_DIR=app/build/outputs/apk/prod/tvRelease
+          # Televisions get the universal split under a name that says TV:
+          # one file that installs on any box, whatever its ABI.
+          TV_APK="$TV_DIR/app-prod-universal-tvRelease.apk"
+          TV_OUT="DollBloom-${{ inputs.version }}-TV-universal.apk"
+          cp "$TV_APK" "$TV_OUT"
+          ls -la "$APK_DIR" "$TV_DIR"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $TAG already exists — editing it and replacing its APKs."
+            gh release upload "$TAG" "$APK_DIR"/*.apk "$TV_OUT" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" \
+              --title "DollBloom ${{ inputs.version }}" \
+              --notes "DollBloom ${{ inputs.version }} (versionCode ${{ inputs.version-code }}) — rebuilt $(date -u +%Y-%m-%dT%H:%MZ); assets replaced on the existing release. The -TV asset is the Android TV universal build." \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            echo "No release at $TAG yet — creating it."
+            gh release create "$TAG" "$APK_DIR"/*.apk "$TV_OUT" \
+              --title "DollBloom ${{ inputs.version }}" \
+              --notes "DollBloom ${{ inputs.version }} (versionCode ${{ inputs.version-code }}). The -TV asset is the Android TV universal build." \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dollbloom-${{ inputs.version }}-signed
+          path: |
+            app/build/outputs/apk/prod/release/*.apk
+            DollBloom-${{ inputs.version }}-TV-universal.apk

@@ -1,5 +1,6 @@
 # Gradle
 .gradle/
+.vscode/
 /build/
 /app/build/
 build/
@@ -41,3 +42,5 @@ keystore.properties
 
 # AI agent configuration
 AGENTS.md
+/output/
+signing/unlock.pass
