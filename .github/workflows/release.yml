@@ -79,16 +79,34 @@ jobs:
         run: |
           # Every build — today's and every future feature update — must be
           # signed with the one DollBloom release key, or an update will not
-          # install over an existing install. If the secret is ever swapped,
+          # install over an existing install. If the key is ever swapped,
           # this fails the build instead of shipping a differently-signed APK.
+          #
+          # The store password is read from keystore.properties, which the
+          # previous step generated from the committed signing/release.lock —
+          # this workflow needs ZERO repository secrets, by design.
+          if [ ! -f dollbloom-release.jks ] || [ ! -f keystore.properties ]; then
+            echo "::error::Signing unlock did not produce dollbloom-release.jks / keystore.properties — cannot verify the key."
+            exit 1
+          fi
+          STOREPASS="$(grep '^storePassword=' keystore.properties | head -1 | cut -d= -f2-)"
+          if [ -z "$STOREPASS" ]; then
+            echo "::error::storePassword missing from keystore.properties — cannot verify the key."
+            exit 1
+          fi
           EXPECTED="B2:E4:39:33:74:68:B6:50:4D:36:36:C0:0E:08:C8:BB:ED:30:7B:A2:25:D3:A9:54:E4:1D:2B:74:4F:B7:37:3B"
-          ACTUAL=$(keytool -list -keystore dollbloom-release.jks -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
-            | grep "SHA-256" | sed 's/.*SHA-256): //' | tr 'a-f' 'A-F')
+          ACTUAL="$(keytool -list -keystore dollbloom-release.jks -storepass "$STOREPASS" \
+            | grep "SHA-256" | sed 's/.*SHA-256): //' | tr 'a-f' 'A-F')"
           echo "Keystore SHA-256: $ACTUAL"
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::keytool returned no fingerprint — is signing/release.lock intact and committed?"
+            exit 1
+          fi
           if [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "::error::Signing key mismatch — refusing to release with a different key than shipped builds."
             exit 1
           fi
+          echo "Signing key matches the pinned DollBloom release key."
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
