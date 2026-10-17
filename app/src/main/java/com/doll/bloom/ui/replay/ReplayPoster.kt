@@ -235,7 +235,7 @@ private fun drawHabits(canvas: Canvas, context: Context, type: Fonts, summary: R
         )
     }
     summary.peakHour?.let {
-        stat(formatHour(context, it), context.getString(R.string.when_you_listen_the_most))
+        stat(formatHour(context, it), context.getString(R.string.when_you_listen_most))
     }
 }
 
@@ -287,19 +287,8 @@ private fun drawCollage(
  * dark base and then flattened under a vertical scrim — the same recipe the
  * player's backdrop uses, at a size where the radii can simply be written down
  * instead of derived from a layout.
- *
- * [height] is the canvas it is being drawn on: the poster passes the full
- * frame, a card that grows with its own contents passes whatever it turned out
- * to be. The anchors are fractions of it, so a short card gets the same
- * composition squeezed into its rows rather than the bottom half of a poster
- * left blank.
  */
-internal fun drawBackdrop(
-    canvas: Canvas,
-    lead: Bitmap?,
-    hue: Float,
-    height: Float = POSTER_H.toFloat(),
-) {
+private fun drawBackdrop(canvas: Canvas, lead: Bitmap?, hue: Float) {
     val colors = paletteOf(lead).map { rotated(it, hue) }
     canvas.drawColor(dimmed(colors.first()))
 
@@ -313,7 +302,7 @@ internal fun drawBackdrop(
     colors.forEachIndexed { index, color ->
         val (fx, fy) = anchors[index]
         val cx = POSTER_W * fx
-        val cy = height * fy
+        val cy = POSTER_H * fy
         val radius = POSTER_W * 0.95f
         paint.shader = RadialGradient(
             cx,
@@ -335,12 +324,12 @@ internal fun drawBackdrop(
         0f,
         0f,
         0f,
-        height,
+        POSTER_H.toFloat(),
         intArrayOf(0x8C000000.toInt(), 0x59000000, 0xCC000000.toInt()),
         floatArrayOf(0f, 0.42f, 1f),
         Shader.TileMode.CLAMP,
     )
-    canvas.drawRect(0f, 0f, POSTER_W.toFloat(), height, paint)
+    canvas.drawRect(0f, 0f, POSTER_W.toFloat(), POSTER_H.toFloat(), paint)
     paint.shader = null
 }
 
@@ -350,7 +339,7 @@ internal fun drawBackdrop(
  * same treatment `MeshGradient` gives its own palette, restated here because
  * this runs nowhere near a composition.
  */
-internal fun paletteOf(bitmap: Bitmap?): List<Int> {
+private fun paletteOf(bitmap: Bitmap?): List<Int> {
     val fallback = listOf(0xFF3A1C71.toInt(), 0xFFD76D77.toInt(), 0xFF2B5876.toInt(), 0xFFFFAF7B.toInt())
     val source = bitmap ?: return fallback
     val swatches = runCatching {
@@ -398,7 +387,7 @@ private fun drawHeader(
 ): Float {
     val label = summary.localizedLabel(context)
     val title = if (label.length == 4 && label.all { it.isDigit() }) {
-        "Replay ${label.takeLast(2)}"
+        "Replay'${label.takeLast(2)}"
     } else {
         "Replay · $label"
     }
@@ -600,7 +589,7 @@ private fun drawFooter(canvas: Canvas, context: Context, type: Fonts) {
  * lettered stand-in the lists use, so a missing sleeve is a deliberate-looking
  * tile rather than a hole.
  */
-internal fun drawArtwork(
+private fun drawArtwork(
     canvas: Canvas,
     bitmap: Bitmap?,
     fallback: String,
@@ -694,12 +683,10 @@ private fun drawRuns(
 /**
  * The DollBloom mark, baseline-aligned with the word beside it.
  *
- * The same vector the app draws everywhere, tinted and given bounds rather than
- * rasterised to a PNG first — a vector drawable renders into an ordinary canvas
- * on every version this app supports, so there is nothing to be gained by
- * keeping a second copy of the logo around at a fixed size.
+ * A small flower mark from the supplied DollBloom wordmark. It is tinted to
+ * preserve the poster's single-colour footer treatment.
  */
-internal fun drawLogo(canvas: Canvas, context: Context, right: Float, baseline: Float) {
+private fun drawLogo(canvas: Canvas, context: Context, right: Float, baseline: Float) {
     val logo = runCatching {
         ResourcesCompat.getDrawable(context.resources, R.drawable.ic_logo, null)
     }.getOrNull() ?: return
@@ -711,7 +698,7 @@ internal fun drawLogo(canvas: Canvas, context: Context, right: Float, baseline: 
 }
 
 /** Trims [text] to [width], with an ellipsis, the way a single-line row would. */
-internal fun ellipsised(text: String, paint: Paint, width: Float): String {
+private fun ellipsised(text: String, paint: Paint, width: Float): String {
     if (paint.measureText(text) <= width) return text
     var end = text.length
     while (end > 1 && paint.measureText(text.take(end) + "…") > width) end--
@@ -727,7 +714,7 @@ internal fun ellipsised(text: String, paint: Paint, width: Float): String {
  * missing font resource a slightly plainer picture rather than a crash on the
  * share button.
  */
-internal class Fonts(context: Context) {
+private class Fonts(context: Context) {
     private val heavy = font(context, R.font.sf_pro_display_heavy) ?: Typeface.DEFAULT_BOLD
     private val semibold = font(context, R.font.sf_pro_display_semibold) ?: Typeface.DEFAULT_BOLD
     private val regular = font(context, R.font.sf_pro_display_regular) ?: Typeface.DEFAULT
@@ -751,7 +738,7 @@ internal class Fonts(context: Context) {
         runCatching { ResourcesCompat.getFont(context, id) }.getOrNull()
 }
 
-internal suspend fun loadBitmap(context: Context, url: String): Bitmap? = runCatching {
+private suspend fun loadBitmap(context: Context, url: String): Bitmap? = runCatching {
     val request = ImageRequest.Builder(context)
         .data(url.artworkAt(CARD_ART_PX))
         // Palette needs pixel access, and a hardware bitmap cannot be drawn
@@ -767,8 +754,8 @@ private const val POSTER_H = 1920
 
 private const val MARGIN = 72f
 
-/** The mark's drawn size. 730×484 in the vector, so this keeps its proportions. */
-private const val LOGO_W = 66f
+/** Flower mark size; square to preserve its proportions. */
+private const val LOGO_W = 44f
 private const val LOGO_H = 44f
 private const val LOGO_GAP = 20f
 

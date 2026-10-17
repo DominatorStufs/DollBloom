@@ -11,7 +11,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import com.doll.bloom.ui.components.longPressMenuClickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -102,13 +102,9 @@ import com.doll.bloom.data.settings.LibraryViewType
 import com.doll.bloom.data.settings.LocalMusicSort
 import com.doll.bloom.download.DownloadedCollection
 import com.doll.bloom.ui.components.MessageState
-import com.doll.bloom.ui.components.PlayingAccent
 import com.doll.bloom.ui.components.PAGE_GUTTER
-import com.doll.bloom.ui.components.hangIntoGutter
-import com.doll.bloom.ui.components.NUMBERED_ROW_DIVIDER_INSET
 import com.doll.bloom.ui.components.ROW_DIVIDER_INSET
 import com.doll.bloom.ui.components.SongRow
-import com.doll.bloom.ui.components.SearchPlayingBars
 import com.doll.bloom.ui.components.rememberRemoteArtworkUrl
 import com.doll.bloom.ui.components.thumbnailBorder
 import com.doll.bloom.ui.components.TopBarContentGap
@@ -542,8 +538,6 @@ private fun SongsTab(
                     song = song,
                     selected = song.videoId in selectedIds,
                     isCurrent = song.isSameTrackAs(currentSong),
-                    isPlaying = song.isSameTrackAs(currentSong) && isPlaying,
-                    searchPlayingStyle = true,
                     onClick = { onSongClick(songs, index) },
                     onLongPress = { onSongLongPress(song) },
                 )
@@ -568,8 +562,6 @@ private fun SongsTab(
                     selected = song.videoId in selectedIds,
                     isCurrent = song.isSameTrackAs(currentSong),
                     isPlaying = song.isSameTrackAs(currentSong) && isPlaying,
-                    searchPlayingStyle = true,
-                    activeTint = PlayingAccent,
                     onClick = { onSongClick(songs, index) },
                     onLongPress = { onSongLongPress(song) },
                     onMore = onSongMore?.let { more -> { more(song) } },
@@ -593,8 +585,6 @@ private fun SongGridCard(
     song: Song,
     selected: Boolean = false,
     isCurrent: Boolean = false,
-    isPlaying: Boolean = false,
-    searchPlayingStyle: Boolean = false,
     onClick: () -> Unit,
     onLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -603,7 +593,7 @@ private fun SongGridCard(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
-            .longPressMenuClickable(onClick = onClick, onLongClick = onLongPress)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(4.dp),
     ) {
         val shape = RoundedCornerShape(12.dp)
@@ -630,9 +620,7 @@ private fun SongGridCard(
                     modifier = Modifier.fillMaxSize(),
                 )
             }
-            if (isCurrent && searchPlayingStyle && isPlaying) {
-                SearchPlayingBars(Modifier.align(Alignment.Center))
-            } else if (isCurrent) {
+            if (isCurrent) {
                 Icon(
                     Icons.Rounded.GraphicEq,
                     contentDescription = stringResource(R.string.now_playing),
@@ -645,7 +633,7 @@ private fun SongGridCard(
         ExplicitSongTitle(
             song = song,
             style = MaterialTheme.typography.titleMedium,
-            color = if (isCurrent && searchPlayingStyle) PlayingAccent else MaterialTheme.colorScheme.onBackground,
+            color = MaterialTheme.colorScheme.onBackground,
         )
         Text(
             text = song.artist.ifBlank { stringResource(R.string.unknown_artist) },
@@ -742,7 +730,7 @@ private fun ArtistRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .longPressMenuClickable(onClick = onClick, onLongClick = onLongPress)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -809,7 +797,7 @@ private fun ArtistGridCard(
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .longPressMenuClickable(onClick = onClick, onLongClick = onLongPress)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -1041,7 +1029,7 @@ private fun AlbumGridCard(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
-            .longPressMenuClickable(onClick = onClick, onLongClick = onLongPress)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(4.dp),
     ) {
         val shape = RoundedCornerShape(12.dp)
@@ -1120,7 +1108,7 @@ private fun AlbumRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent, RoundedCornerShape(10.dp))
-            .longPressMenuClickable(onClick = onClick, onLongClick = onLongPress)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1235,15 +1223,8 @@ private fun DrillDownHeader(
             }
             Spacer(Modifier.weight(1f))
             onMore?.let { more ->
-                // Hangs into the gutter the way the back arrow opposite it
-                // does (that one through the row's 6dp start), so the two
-                // glyphs sit the same distance from their edges.
                 Box(
-                    modifier = Modifier
-                        .hangIntoGutter(PAGE_GUTTER - 6.dp)
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .clickable(onClick = more),
+                    modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = more),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Rounded.MoreHoriz, stringResource(R.string.more), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1407,8 +1388,6 @@ private fun DrillDownSongList(
                     song = song,
                     selected = song.videoId in selectedIds,
                     isCurrent = song.isSameTrackAs(currentSong),
-                    isPlaying = song.isSameTrackAs(currentSong) && isPlaying,
-                    searchPlayingStyle = true,
                     onClick = { onSongClick(songs, index) },
                     onLongPress = { onSongLongPress(song) },
                 )
@@ -1443,8 +1422,6 @@ private fun DrillDownSongList(
                     selected = song.videoId in selectedIds,
                     isCurrent = song.isSameTrackAs(currentSong),
                     isPlaying = song.isSameTrackAs(currentSong) && isPlaying,
-                    searchPlayingStyle = true,
-                    activeTint = PlayingAccent,
                     trackNumber = index + 1,
                     onClick = { onSongClick(songs, index) },
                     onLongPress = { onSongLongPress(song) },
@@ -1453,7 +1430,7 @@ private fun DrillDownSongList(
                 )
                 if (index < songs.lastIndex) {
                     HorizontalDivider(
-                        modifier = Modifier.padding(start = NUMBERED_ROW_DIVIDER_INSET),
+                        modifier = Modifier.padding(start = ROW_DIVIDER_INSET),
                         thickness = 0.5.dp,
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                     )
@@ -1465,12 +1442,8 @@ private fun DrillDownSongList(
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-/**
- * Whether this track is a hit for a query typed into [LocalSearchField] — or
- * into the Search tab with its Library source picked, which has to find the
- * same tracks this folder would.
- */
-internal fun Song.matchesSearch(query: String): Boolean =
+/** Whether this track is a hit for a query typed into [LocalSearchField]. */
+private fun Song.matchesSearch(query: String): Boolean =
     title.contains(query, ignoreCase = true) ||
         artist.contains(query, ignoreCase = true) ||
         albumName?.contains(query, ignoreCase = true) == true

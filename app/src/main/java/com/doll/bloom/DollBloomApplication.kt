@@ -11,11 +11,6 @@ import coil3.disk.directory
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
 import com.doll.bloom.auth.AuthStore
-import com.doll.bloom.data.DebugLog
-import com.doll.bloom.data.lyrics.LyricsTranslation
-import androidx.appcompat.app.AppCompatDelegate
-import com.doll.bloom.ui.player.AndroidPlayerHost
-import com.doll.bloom.ui.player.PlayerPlatform
 import com.doll.bloom.data.canvas.CanvasCache
 import com.doll.bloom.data.smb.SmbCoverFetcher
 import com.doll.bloom.data.webdav.WebDavCoilAuth
@@ -24,7 +19,7 @@ import com.doll.bloom.playback.AudioCache
 import com.doll.bloom.playback.LastPlayed
 import com.doll.bloom.playback.OriginalVersion
 import com.doll.bloom.data.innertube.Innertube
-import com.doll.bloom.data.innertube.AndroidStreamHooks
+import com.doll.bloom.data.innertube.InnerTubeXResolver
 import com.doll.bloom.data.listentogether.ListenTogether
 import com.doll.bloom.data.scrobbling.LastFM
 import com.doll.bloom.data.settings.AppSettings
@@ -43,26 +38,6 @@ class DollBloomApplication : Application(), SingletonImageLoader.Factory {
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
-        // The player is drawn by the shared UI module; this is what it reads
-        // underneath — settings, the Canvas decoder, outputs, the party.
-        AndroidStreamHooks.installEarly()
-        PlayerPlatform.install(AndroidPlayerHost(this))
-        com.doll.bloom.ui.AppUi.install(com.doll.bloom.ui.AndroidAppUiHost)
-        // The shared data layer (lyrics, the YouTube Music client) logs to
-        // logcat on debug builds only, as the app's own DebugLog always has.
-        if (BuildConfig.DEBUG) {
-            DebugLog.sink = DebugLog.Sink { level, tag, message, error ->
-                when (level) {
-                    'D' -> android.util.Log.d(tag, message, error)
-                    'I' -> android.util.Log.i(tag, message, error)
-                    'W' -> android.util.Log.w(tag, message, error)
-                    else -> android.util.Log.e(tag, message, error)
-                }
-            }
-        }
-        // The per-app language picker, which YouTube Music's `hl` follows.
-        Innertube.appLanguage = { AppCompatDelegate.getApplicationLocales().get(0)?.language }
-        LyricsTranslation.cacheDir = cacheDir
         // PlaybackService shares this process, so seeding the cookie here means
         // stream resolution is authenticated from the first play onwards.
         authStore = AuthStore(this)
@@ -75,7 +50,7 @@ class DollBloomApplication : Application(), SingletonImageLoader.Factory {
         // nothing that runs after startup can see any of them half open.
         val backgroundInit = thread(name = "startup-init") {
             SourceRegistry.init(this)
-            AndroidStreamHooks.initInnerTubeX(this)
+            InnerTubeXResolver.init(this)
             // Its own directory: canvas clips are looping video, not audio, and
             // belong in a cache AudioCache's own limit and eviction policy were
             // never sized for. See CanvasCache's doc for why this one exists at
@@ -151,8 +126,6 @@ class DollBloomApplication : Application(), SingletonImageLoader.Factory {
         }
         // Initialize LastFM with saved settings if available
         initLastfm()
-        // The public "apps open right now" count; see Presence.
-        com.doll.bloom.data.presence.AndroidPresence.install(this)
         backgroundInit.join()
     }
 
@@ -196,14 +169,17 @@ class DollBloomApplication : Application(), SingletonImageLoader.Factory {
     private fun initLastfm() {
         val sessionKey = AppSettings.lastfmSessionKey.value
         if (sessionKey.isBlank()) return
+        // The one effective pair, already selected across custom/APK/legacy
+        // sources by AppSettings — never re-combined here from parts. Without
+        // a complete pair there is nothing to configure and nothing to log:
+        // the login UI offers in-app setup and says what is missing.
+        val credentials = AppSettings.lastfmCredentials.value
+        if (!credentials.isConfigured) return
         val endpoint = AppSettings.lastfmEndpoint.value.ifBlank { LastFM.DEFAULT_API_ENDPOINT }
-        val apiKey = AppSettings.lastfmApiKey.value.trim()
-        val secret = AppSettings.lastfmSecret.value.trim()
-        if (apiKey.isBlank() || secret.isBlank()) return
         LastFM.configure(
             endpoint = endpoint,
-            apiKey = apiKey,
-            secret = secret,
+            apiKey = credentials.apiKey,
+            secret = credentials.sharedSecret,
             sessionKey = sessionKey,
         )
     }

@@ -80,6 +80,22 @@ class AddonPolicyTest {
     }
 
     @Test
+    fun `samsung qualifies only in uhq`() {
+        val a2dp = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP)
+        for (codec in listOf("SSC UHQ", "Samsung UHQ")) {
+            assertTrue(codec, LosslessOutput.decide(a2dp, codec, 48_000).capable)
+        }
+        // Named for the family only: the rate is what tells UHQ apart.
+        for (codec in listOf("SSC", "Samsung Seamless Codec", "Samsung Scalable")) {
+            assertTrue(codec, LosslessOutput.decide(a2dp, codec, 96_000).capable)
+            assertFalse(codec, LosslessOutput.decide(a2dp, codec, 48_000).capable)
+            assertFalse(codec, LosslessOutput.decide(a2dp, codec, null).capable)
+        }
+        // A high rate alone proves nothing for anyone else's lossy codec.
+        assertFalse(LosslessOutput.decide(a2dp, "aptX Adaptive", 96_000).capable)
+    }
+
+    @Test
     fun `an unnamed bluetooth codec is reported, not guessed`() {
         val state = LosslessOutput.decide(setOf(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP), null)
         assertFalse(state.capable)

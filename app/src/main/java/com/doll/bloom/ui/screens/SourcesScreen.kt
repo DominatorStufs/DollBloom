@@ -1,12 +1,7 @@
 package com.doll.bloom.ui.screens
 
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
-import android.provider.Settings
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -68,7 +63,6 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.doll.bloom.R
 import com.doll.bloom.data.settings.AppSettings
-import com.doll.bloom.data.settings.permits
 import com.doll.bloom.data.smb.SmbRepository
 import com.doll.bloom.data.webdav.WebDavRepository
 import com.doll.bloom.data.settings.AudioQuality
@@ -280,7 +274,7 @@ fun SourcesScreen(
             }
 
             // The one shut-out an addon can't tell apart from "not lossless":
-            // headphones on LDAC or LHDC whose codec Android won't name without
+            // headphones on LDAC, LHDC or SSC UHQ whose codec Android won't name without
             // the Nearby devices permission. Offered only then, and only from
             // here, where the reason for asking is on screen.
             val waiting = configs.any { it.enabled && it.awaitsLosslessOutput }
@@ -666,7 +660,7 @@ private fun AddSourceRow(onClick: () -> Unit) {
 
 /**
  * Asks for Nearby devices so the Bluetooth codec can be read — the only way an
- * LDAC or LHDC headset qualifies for an addon's `checkValidLossless`. Draws
+ * LDAC, LHDC or SSC UHQ headset qualifies for an addon's `checkValidLossless`. Draws
  * nothing where the permission does not exist (before Android 12) or is
  * already granted, since asking again would do nothing.
  */
@@ -675,43 +669,14 @@ private fun BluetoothCodecPermissionRow() {
     val context = LocalContext.current
     val permission = "android.permission.BLUETOOTH_CONNECT"
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-    fun isGranted() =
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-    var granted by remember { mutableStateOf(isGranted()) }
-    var denied by remember { mutableStateOf(false) }
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        granted = ok
-        denied = !ok
-        if (ok) LosslessOutput.refresh()
+    if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) return
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) LosslessOutput.refresh()
     }
-    // Back from system Settings, where it may have been switched on.
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        val now = isGranted()
-        if (now && !granted) LosslessOutput.refresh()
-        granted = now
-        if (now) denied = false
-    }
-    // Asked as soon as the screen shows the shut-out it would fix, and again
-    // on every later visit, since this row is composed afresh each time. After
-    // a second refusal Android answers without a dialog, which lands in
-    // [denied] and the Settings prompt below.
-    LaunchedEffect(Unit) {
-        if (!isGranted()) ask.launch(permission)
-    }
-    if (granted) return
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable {
-                if (denied) {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                            .setData(Uri.fromParts("package", context.packageName, null)),
-                    )
-                } else {
-                    ask.launch(permission)
-                }
-            }
+            .clickable { ask.launch(permission) }
             .heightIn(min = 60.dp)
             .padding(horizontal = ROW_INSET, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -720,22 +685,18 @@ private fun BluetoothCodecPermissionRow() {
         Icon(
             imageVector = Icons.Rounded.Bluetooth,
             contentDescription = null,
-            tint = if (denied) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(ICON_SIZE),
         )
         Spacer(Modifier.width(ICON_GAP))
         Column(Modifier.weight(1f)) {
             Text(
-                text = stringResource(
-                    if (denied) R.string.lossless_output_permission_denied else R.string.lossless_output_permission,
-                ),
+                text = stringResource(R.string.lossless_output_permission),
                 style = MaterialTheme.typography.bodyLarge,
-                color = if (denied) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.primary,
             )
             Text(
-                text = stringResource(
-                    if (denied) R.string.lossless_output_permission_denied_detail else R.string.lossless_output_permission_detail,
-                ),
+                text = stringResource(R.string.lossless_output_permission_detail),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,

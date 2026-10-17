@@ -474,7 +474,7 @@ class AddonClient(rawBaseUrl: String) {
         private const val BACKOFF_BASE_MS = 500L
         private const val BACKOFF_CAP_MS = 8_000L
 
-        private val USER_AGENT = "DollBloom/v${com.doll.bloom.BuildConfig.VERSION_NAME}"
+        private const val USER_AGENT = "DollBloom"
 
         /**
          * What [probeSearch] asks for. Deliberately an ordinary word rather

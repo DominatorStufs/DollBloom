@@ -1,6 +1,4 @@
-import java.util.Base64
 import java.util.Properties
-import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
@@ -10,80 +8,109 @@ plugins {
 }
 
 /**
- * Signing details, kept out of the repository in `keystore.properties`
- * (see keystore.properties.example). Absent on a fresh checkout, in which case
- * the release build still runs and simply comes out unsigned rather than
- * failing — only whoever holds the key can produce a shippable APK.
+ * Signing details are kept out of tracked source in the root-level
+ * `keystore.properties` (see keystore.properties.example). CI creates this file
+ * from GitHub Actions secrets at build time. Without it, release builds remain
+ * unsigned rather than failing.
  */
-run {
-    val plainProps = rootProject.file("keystore.properties")
-    val lock = rootProject.file("signing/release.lock")
-    val encProps = rootProject.file("signing/keystore.properties.enc")
-    val encStore = rootProject.file("signing/dollbloom-release.jks.enc")
-
-    if (!plainProps.exists() && lock.isFile) {
-        val kv = lock.readLines()
-            .filter { it.contains('=') && !it.startsWith("#") }
-            .associate { it.substringBefore('=') to it.substringAfter('=') }
-        val b64 = kv["keyBase64"]
-        if (!b64.isNullOrEmpty()) {
-            rootProject.file("dollbloom-release.jks")
-                .writeBytes(Base64.getMimeDecoder().decode(b64))
-            plainProps.writeText(
-                "storeFile=dollbloom-release.jks\n" +
-                    "storePassword=${kv["storePassword"]}\n" +
-                    "keyAlias=${kv["keyAlias"]}\n" +
-                    "keyPassword=${kv["keyPassword"]}\n",
-            )
-            logger.lifecycle("Signing unlocked from signing/release.lock")
-        }
-    }
-
-    val pass: String? = providers.gradleProperty("SIGNING_UNLOCK").orNull
-        ?: System.getenv("SIGNING_UNLOCK")
-        ?: rootProject.file("signing/unlock.pass")
-            .takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
-    if (!plainProps.exists() && encProps.isFile && encStore.isFile && !pass.isNullOrEmpty()) {
-        listOf(
-            encStore to rootProject.file("dollbloom-release.jks"),
-            encProps to plainProps,
-        ).forEach { (enc, out) ->
-            val pb = ProcessBuilder(
-                "openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "600000",
-                "-in", enc.absolutePath, "-out", out.absolutePath,
-                "-pass", "env:GRADLE_SIGNING_UNLOCK",
-            )
-            pb.environment()["GRADLE_SIGNING_UNLOCK"] = pass
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val log = proc.inputStream.bufferedReader().readText()
-            if (proc.waitFor() != 0) {
-                logger.warn("Could not unlock signing secrets from ${enc.name}: ${log.trim()}")
-                out.takeIf { !log.isEmpty() }?.delete()
-            }
-        }
-        if (plainProps.exists()) logger.lifecycle("Signing secrets unlocked from the .enc files in signing/")
-    }
-}
 val signing = Properties().apply {
     val file = rootProject.file("keystore.properties")
-    if (file.exists()) file.inputStream().use { load(it) }
+    if (file.isFile) file.inputStream().use { load(it) }
 }
 
 val localProps = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
-val lastfmApiKey: String = (
-    localProps.getProperty("LASTFM_API_KEY")
-        ?: System.getenv("LASTFM_API_KEY")
-        ?: ""
-    ).trim()
-val lastfmSecret: String = (
-    localProps.getProperty("LASTFM_SECRET")
-        ?: System.getenv("LASTFM_SECRET")
-        ?: ""
-    ).trim()
+/*
+ * Last.fm application credentials: the API key of a registered Last.fm
+ * application and its matching shared secret. Neither is an account password.
+ *
+ * Selected as COMPLETE PAIRS, one source at a time. The old
+ * `localProps.getProperty(name) ?: System.getenv(name)` per-field fallback let
+ * an *empty* local property hide a valid environment value (getProperty
+ * answers "" rather than null for `LASTFM_API_KEY=`), and let one source's key
+ * be combined with the other source's secret — a pair Last.fm answers with a
+ * signature error that reads exactly like a rejected password. So:
+ *
+ *  - both fields are trimmed, and a null becomes empty;
+ *  - a complete local.properties pair wins;
+ *  - otherwise a complete process-environment pair is used, even when the
+ *    local entries are blank or partial;
+ *  - a partial pair from either source is rejected whole — never completed
+ *    with the other source's half;
+ *  - fully absent credentials are supported: the build proceeds and the app
+ *    offers in-app Last.fm API setup (see LastfmCredentials / AccountAlerts).
+ *
+ * Only status and setting *names* are logged here, never values.
+ */
+fun lastfmTrim(value: String?): String = value?.trim().orEmpty()
+val lastfmLocalKey = lastfmTrim(localProps.getProperty("LASTFM_API_KEY"))
+val lastfmLocalSecret = lastfmTrim(localProps.getProperty("LASTFM_SECRET"))
+val lastfmEnvKey = lastfmTrim(System.getenv("LASTFM_API_KEY"))
+val lastfmEnvSecret = lastfmTrim(System.getenv("LASTFM_SECRET"))
+
+/**
+ * The first complete pair among (local, env), or an empty pair when neither
+ * source is complete.
+ *
+ * A function returning a value rather than a `when` that assigns one: a Kotlin
+ * *script* may not assign a top-level `val` from inside a branch ("Captured
+ * member values initialization is forbidden due to possible reassignment"), and
+ * the branch form is the natural thing to write here. See the comment above for
+ * why the selection is per-source and complete-pair-only.
+ */
+fun lastfmCompletePair(
+    localKey: String,
+    localSecret: String,
+    envKey: String,
+    envSecret: String,
+): Pair<String, String> =
+    when {
+        localKey.isNotEmpty() && localSecret.isNotEmpty() -> localKey to localSecret
+        envKey.isNotEmpty() && envSecret.isNotEmpty() -> envKey to envSecret
+        else -> "" to ""
+    }
+
+val (lastfmApiKey, lastfmSecret) =
+    lastfmCompletePair(lastfmLocalKey, lastfmLocalSecret, lastfmEnvKey, lastfmEnvSecret)
+
+if (lastfmApiKey.isNotEmpty() && lastfmSecret.isNotEmpty()) {
+    logger.lifecycle("Last.fm credentials in APK: configured")
+} else {
+    val partialLocal = listOf(
+        "LASTFM_API_KEY".takeIf { lastfmLocalKey.isNotEmpty() },
+        "LASTFM_SECRET".takeIf { lastfmLocalSecret.isNotEmpty() },
+    ).filterNotNull()
+    val partialEnv = listOf(
+        "LASTFM_API_KEY".takeIf { lastfmEnvKey.isNotEmpty() },
+        "LASTFM_SECRET".takeIf { lastfmEnvSecret.isNotEmpty() },
+    ).filterNotNull()
+    if (partialLocal.isNotEmpty()) {
+        logger.warn(
+            "local.properties holds ${partialLocal.joinToString(", ")} without a complete pair; " +
+                "ignoring the partial pair rather than mixing it with the environment. Values are not logged.",
+        )
+    }
+    if (partialEnv.isNotEmpty()) {
+        logger.warn(
+            "The process environment holds ${partialEnv.joinToString(", ")} without a complete pair; ignoring it. " +
+                "Values are not logged.",
+        )
+    }
+    logger.warn(
+        "Last.fm credentials in APK: not configured. The build still succeeds; the app offers in-app " +
+            "Last.fm API setup, and CI can supply LASTFM_API_KEY/LASTFM_SECRET as repository secrets.",
+    )
+}
+
+/** A Kotlin value as a generated-Java string literal, escaping what would break one. */
+fun javaStringLiteral(value: String): String = "\"" + value
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\n", "\\n")
+    .replace("\r", "\\r")
+    .replace("\t", "\\t") + "\""
 
 /*
  * Where Listen Together's party server lives. Not a credential — it is a public
@@ -96,35 +123,43 @@ val lastfmSecret: String = (
  * anything typed there wins and persists. So a fresh checkout without this line
  * builds and runs, and simply asks for an address the first time somebody opens
  * the screen. See ListenTogether.DEFAULT_SERVER.
+ *
+ * The value shipped here is the upstream BitChord project's own party server,
+ * and DollBloom points at it because a party needs *somewhere* to meet and this
+ * fork has not deployed a backend of its own. It is not a DollBloom service and
+ * carries no promise from anyone: deploy your own (backend/ has it, and
+ * render.yaml describes the shape) and put the address here or in
+ * local.properties, and the dialog that asks whether to switch servers will offer
+ * it from then on.
  */
 val listenTogetherServer: String = (
-    localProps.getProperty("LISTEN_TOGETHER_SERVER")
-        ?: System.getenv("LISTEN_TOGETHER_SERVER")
-        ?: "https://dollbloom-listen-together.onrender.com"
+    localProps.getProperty("LISTEN_TOGETHER_SERVER")?.takeIf { it.isNotBlank() }
+        ?: System.getenv("LISTEN_TOGETHER_SERVER")?.takeIf { it.isNotBlank() }
+        ?: "https://bitchord-listen-together.onrender.com"
     ).trim().trimEnd('/')
 
 /*
- * Bump this by hand before cutting each sideloaded test build ("beta2",
- * "beta3", ...) and blank it out before cutting the real release. Marks the
- * versionName below as a pre-release: AppUpdateChecker.isNewer() treats any
- * "-suffix" as older than a clean release of the same number, so testers
- * still get the update prompt once the matching tag is actually published.
- *
- * Applied to release builds as well as debug ones, and that is the whole
- * point of it. A sideloaded beta is a *release* build — signed with the real
- * key, installed over the real package — so leaving the marker off it is
- * exactly the case that strands a tester: their build calls itself 1.6.1,
- * the published 1.6.1 then matches it, isNewer() says no, and no prompt ever
- * comes. Blanking this line is the one step that turns a beta into a release,
- * so it is the one place to get right.
+ * Direct/local builds keep these defaults. The manual Android workflow passes
+ * appVersionCode and appVersionName as Gradle properties. Version name stays a
+ * string, so values such as "1.8-beta2" or "DollBloom2026" are supported.
  */
+val configuredVersionCode = providers.gradleProperty("appVersionCode").orNull
+val appVersionCode = if (configuredVersionCode == null) {
+    22
+} else {
+    val parsed = configuredVersionCode.toIntOrNull()
+        ?: throw GradleException("appVersionCode must be a positive integer")
+    if (parsed !in 1..2_100_000_000) {
+        throw GradleException("appVersionCode must be between 1 and 2100000000")
+    }
+    parsed
+}
+val configuredVersionName = providers.gradleProperty("appVersionName").orNull
+val appVersionName = configuredVersionName ?: "1.7"
+if (!Regex("[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}").matches(appVersionName)) {
+    throw GradleException("appVersionName must be 1-64 letters/digits, spaces, dots, underscores, pluses, or hyphens")
+}
 val betaSuffix = ""
-
-val overrideVersionName: String? = providers.gradleProperty("dollbloom.versionName").orNull
-    ?.takeIf { it.isNotBlank() }
-val overrideVersionCode: Int? = providers.gradleProperty("dollbloom.versionCode").orNull
-    ?.takeIf { it.isNotBlank() }
-    ?.toInt()
 
 android {
     namespace = "com.doll.bloom"
@@ -137,26 +172,39 @@ android {
         // Haze falls back to a translucent scrim below that.
         minSdk = 26
         targetSdk = 36
-        versionCode = overrideVersionCode ?: 26
-        versionName = overrideVersionName ?: "1.8"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Last.fm credentials are supplied locally and never committed.
-        buildConfigField("String", "LASTFM_API_KEY", "\"${lastfmApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-        buildConfigField("String", "LASTFM_SECRET", "\"${lastfmSecret.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        // Last.fm credentials are supplied locally and never committed. The
+        // literal escape covers newlines/tabs too: a properties file may carry
+        // them in escaped form, and a raw one inside a generated Java string
+        // literal is a broken BuildConfig, not a credential.
+        buildConfigField("String", "LASTFM_API_KEY", javaStringLiteral(lastfmApiKey))
+        buildConfigField("String", "LASTFM_SECRET", javaStringLiteral(lastfmSecret))
         buildConfigField(
             "String",
             "LISTEN_TOGETHER_SERVER",
-            "\"${listenTogetherServer.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+            javaStringLiteral(listenTogetherServer),
         )
+    }
+
+    lint {
+        // These manifest-registered Kotlin components correctly extend their AndroidX
+        // component base classes, but the current lint run misreports them as invalid.
+        // Suppress only this false-positive issue; keep the remaining release lint checks.
+        disable += "Instantiatable"
     }
 
     splits {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86_64")
+            // Phone builds only: 32-bit ARM, 64-bit ARM, plus one universal
+            // APK containing both. Desktop x86_64 belongs to BitChord's
+            // desktop targets and is deliberately not shipped by DollBloom.
+            include("armeabi-v7a", "arm64-v8a")
             isUniversalApk = true
         }
     }
@@ -168,15 +216,13 @@ android {
         }
     }
 
-    // applicationId can only be overridden per flavor, not per build type, so a
-    // dev/prod dimension exists purely to let both sit installed side by side
-    // on the same device instead of the dev build overwriting the prod one.
+    // Dev and prod remain separate resource/configuration flavors, but every
+    // app variant intentionally keeps the same application ID: com.doll.bloom.
     flavorDimensions += "env"
     productFlavors {
         create("dev") {
             dimension = "env"
-            applicationId = "com.dev.bloom"
-            resValue("string", "app_name", "DollBloom Dev")
+            resValue("string", "app_name", "DollBloom 🌸 Dev")
         }
         create("prod") {
             dimension = "env"
@@ -196,6 +242,7 @@ android {
         if (store != null && store.exists()) {
             create("release") {
                 storeFile = store
+                storeType = signing.getProperty("storeType") ?: "JKS"
                 storePassword = signing.getProperty("storePassword")
                 keyAlias = signing.getProperty("keyAlias")
                 keyPassword = signing.getProperty("keyPassword")
@@ -234,34 +281,15 @@ android {
             signingConfig = signingConfigs.findByName("release")
         }
         /*
-         * The Android TV cut of the release: same R8 pass, same signing key,
-         * same package as the phone build — the differences are the "-TV"
-         * marker on the versionName (Settings and the update checker then
-         * tell a TV install apart at a glance) and the tvRelease source set,
-         * which adds the leanback launcher filter, the not-required
-         * touchscreen declaration and the 320x180 home-row banner. The
-         * Release workflow builds this beside the phone APKs in one run and
-         * ships only its universal split, since a television's ABI is
-         * whichever one the box happens to carry.
-         */
-        create("tvRelease") {
-            initWith(getByName("release"))
-            versionNameSuffix = if (betaSuffix.isNotEmpty()) "-$betaSuffix-TV" else "-TV"
-            signingConfig = signingConfigs.findByName("release")
-            matchingFallbacks += listOf("release")
-        }
-        /*
-         * The release build, installable next to the dev and prod apps: same R8,
-         * same non-debuggable runtime, signed with the debug key under its own
-         * package so it never replaces either. For measuring startup the way
-         * users get it and for checking that shrinking broke nothing — a debug
-         * build is interpreted and verified at runtime and says little about
-         * either. `./gradlew installDevBenchmark`.
+         * A release-like benchmark build of the dev flavor. It uses the same
+         * application ID (`com.doll.bloom`) as every other variant, so installing
+         * it replaces whichever DollBloom variant is already on the device. It
+         * uses the debug key and non-debuggable runtime to check R8 and measure
+         * startup. `./gradlew installDevBenchmark`.
          */
         create("benchmark") {
             initWith(getByName("release"))
             signingConfig = signingConfigs.getByName("debug")
-            applicationIdSuffix = ".benchmark"
             matchingFallbacks += listOf("release")
         }
     }
@@ -270,6 +298,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     packaging {
+        jniLibs {
+            // Compress native libraries inside APKs to reduce sideload download size.
+            // Android extracts them at install time; all native libraries and ABIs remain included.
+            useLegacyPackaging = true
+        }
         resources {
             // SMBJ's BouncyCastle and jspecify both ship this descriptor.
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
@@ -333,9 +366,6 @@ val newPipeExtractorStripped = tasks.register<org.gradle.api.tasks.bundling.Jar>
 }
 
 dependencies {
-    implementation(project(":shared"))
-    implementation(project(":sharedUi"))
-
     // ---- Compose (Material 3) ----
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
@@ -355,8 +385,6 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    // ProcessLifecycleOwner: whether the app is on screen, for the open-app count.
-    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
@@ -377,15 +405,6 @@ dependencies {
     // progressive, and the extractors try to sniff XML as audio
     // (ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED). See withResolvedStreamType.
     implementation("androidx.media3:media3-exoplayer-dash:1.11.0")
-    // FFmpeg audio decoding for what the phone has no decoder of its own for:
-    // ALAC on every phone, and AC-4, E-AC-3 / AC-3 (Dolby Atmos music),
-    // TrueHD and DTS on phones without Dolby or DTS licensed in. Added as the
-    // *last* audio renderer in silenceSkippingRenderers, so a platform decoder
-    // still wins wherever one exists. No artifact: the extension's Java half is
-    // vendored under app/src/main/java/androidx/media3/decoder/ffmpeg, and
-    // libffmpegJNI.so under src/main/jniLibs is built from librempeg (the only
-    // FFmpeg line with an AC-4 decoder) by native/ffmpeg/build.sh. It needs
-    // media3-decoder, which media3-exoplayer already brings.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.9.0")
 
     // ---- Images: Coil 3 + Palette (dominant colors for the mesh gradient) ----
@@ -464,14 +483,6 @@ dependencies {
     // the app for a saving that does not matter in a self-distributed APK.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
-    // ---- Casting: Google Cast sender + the route discovery it sits on ----
-    // The framework and the router only. media3-cast is left out on purpose:
-    // its CastPlayer hands the receiver whatever URI a MediaItem carries, and
-    // ours are `dollbloom://` addresses that only the service's resolver can
-    // turn into a real stream — see [com.doll.bloom.playback.cast.CastPlayback].
-    implementation("com.google.android.gms:play-services-cast-framework:22.2.0")
-    implementation("androidx.mediarouter:mediarouter:1.8.1")
-
     testImplementation("junit:junit:4.13.2")
     // A real HTTP server for the addon tests. The addon protocol is entirely
     // "what does this app send, and what does it do with what comes back", and
@@ -507,10 +518,10 @@ val verifyDevInstall = tasks.register("verifyDevInstall") {
             .drop(1)
             .mapNotNull { line -> line.split('\t').takeIf { it.size == 2 && it[1] == "device" }?.get(0) }
         serials.forEach { serial ->
-            logger.lifecycle("verifyDevInstall: compiling com.dev.bloom on $serial")
+            logger.lifecycle("verifyDevInstall: compiling com.doll.bloom on $serial")
             ProcessBuilder(
                 adbPath, "-s", serial, "shell", "cmd", "package", "compile",
-                "-m", "verify", "-f", "com.dev.bloom",
+                "-m", "verify", "-f", "com.doll.bloom",
             ).inheritIO().start().waitFor()
         }
     }

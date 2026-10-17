@@ -1,6 +1,7 @@
 # Code of Conduct
 
 ## Expected Behavior
+
 Contributors and maintainers participating in DollBloom discussions, issues, and pull requests are expected to:
 - Communicate constructively and professionally.
 - Treat fellow contributors, maintainers, and users with respect.
@@ -8,6 +9,7 @@ Contributors and maintainers participating in DollBloom discussions, issues, and
 - Gracefully accept constructive criticism.
 
 ## Unacceptable Behavior
+
 The following behaviors are unacceptable within the project:
 - Harassment, derogatory comments, or personal attacks.
 - Trolling, insulting, or disruptive behavior.
@@ -15,12 +17,9 @@ The following behaviors are unacceptable within the project:
 - Unwelcome sexual attention, advances, or inappropriate language.
 
 ## Reporting
-If you experience or witness unacceptable behavior, report it privately to the project maintainer:
-- Email: `kushagrasinghx@gmail.com`
 
-Reports will be handled privately and with appropriate discretion.
+If you experience or witness unacceptable behavior, contact the DollBloom maintainer privately through the [DominatorStufs GitHub profile](https://github.com/DominatorStufs). Reports will be handled with appropriate discretion.
 
 ## Enforcement
-The project maintainer reserves the right to:
-- Remove, edit, or reject comments, commits, code, issues, or pull requests that violate this code of conduct.
-- Temporarily or permanently restrict or block participation in project repositories for repeated or severe violations.
+
+The project maintainer reserves the right to remove, edit, or reject comments, commits, code, issues, or pull requests that violate this code of conduct, and to temporarily or permanently restrict participation for repeated or severe violations.

@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BlurOff
 import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.Brightness4
-import androidx.compose.material.icons.rounded.Cached
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Cloud
@@ -113,7 +112,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
@@ -136,7 +134,10 @@ import com.doll.bloom.ui.performance.supportedPerformanceRefreshRates
 import com.doll.bloom.data.model.Account
 import com.doll.bloom.data.LocalMediaRepository
 import com.doll.bloom.data.NerdStats
-import com.doll.bloom.data.scrobbling.LastFM
+import com.doll.bloom.ui.components.LastfmLoginFields
+import com.doll.bloom.ui.components.LastfmLoginUiState
+import com.doll.bloom.ui.components.lastfmSignIn
+import com.doll.bloom.ui.components.lastfmSignInEnabled
 import com.doll.bloom.data.listentogether.ListenTogether
 import com.doll.bloom.data.settings.AppSettings
 import com.doll.bloom.data.settings.OutputPcmMode
@@ -179,6 +180,8 @@ fun SettingsScreen(
     onListenTogether: () -> Unit,
     onSpotifyCanvasAuth: () -> Unit,
     onAppLanguage: () -> Unit,
+    /** Opens Last.fm's authorization page when a password sign-in is refused. */
+    onOpenLastfmAuthorize: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
@@ -215,12 +218,10 @@ fun SettingsScreen(
     val outputPcmMode by AppSettings.outputPcmMode.collectAsStateWithLifecycle()
     val preferUsbDac by AppSettings.preferUsbDac.collectAsStateWithLifecycle()
     val loudnessNormalization by AppSettings.loudnessNormalization.collectAsStateWithLifecycle()
-    val loudnessOffOnSpeaker by AppSettings.loudnessOffOnSpeaker.collectAsStateWithLifecycle()
     val outputStatus by AudioOutputStatus.current.collectAsStateWithLifecycle()
     val playingFormat by NerdStats.current.collectAsStateWithLifecycle()
     val playingDolbyAtmos = playingFormat?.isDolbyAtmos == true
     val cacheLimitBytes by AppSettings.audioCacheLimitBytes.collectAsStateWithLifecycle()
-    val showCacheFolder by AppSettings.showCacheFolder.collectAsStateWithLifecycle()
     val downloadQuality by AppSettings.downloadQuality.collectAsStateWithLifecycle()
     val wifiOnlyDownloads by AppSettings.wifiOnlyDownloads.collectAsStateWithLifecycle()
     val exportDownloads by AppSettings.exportDownloads.collectAsStateWithLifecycle()
@@ -280,7 +281,6 @@ fun SettingsScreen(
     var exportStatus by remember { mutableStateOf<String?>(null) }
     var importStatus by remember { mutableStateOf<String?>(null) }
     var confirmImport by remember { mutableStateOf(false) }
-    var confirmClearSongCache by remember { mutableStateOf(false) }
     var showPerformanceWarning by remember { mutableStateOf(false) }
     var showPerformanceConfirmation by remember { mutableStateOf(false) }
     val backupScope = rememberCoroutineScope()
@@ -604,14 +604,6 @@ fun SettingsScreen(
                         )
                     },
                     onClick = { AppSettings.setLoudnessNormalization(!loudnessNormalization) },
-                )
-            }
-            val loudnessSpeakerTitle = stringResource(R.string.loudness_off_on_speaker)
-            row(loudnessSpeakerTitle, "loudness", "speaker", "normalize") {
-                SettingsSubRow(
-                    title = loudnessSpeakerTitle,
-                    checked = loudnessOffOnSpeaker,
-                    onCheckedChange = AppSettings::setLoudnessOffOnSpeaker,
                 )
             }
             // Automix decides its own length from each pair of tracks —
@@ -1097,51 +1089,26 @@ fun SettingsScreen(
             }
         }
 
-        val cacheUnlimited = cacheLimitBytes == AppSettings.UNLIMITED_CACHE_LIMIT_BYTES
-        // The slider's last stop, one step past the largest fixed size, is
-        // "Unlimited" — see [AppSettings.setAudioCacheLimitBytes].
-        val cacheLimitMb = if (cacheUnlimited) CACHE_UNLIMITED_STOP_MB else (cacheLimitBytes / (1024 * 1024)).toInt()
-        val unlimitedLabel = stringResource(R.string.song_cache_unlimited)
-        val cacheLimitLabel = if (cacheUnlimited) unlimitedLabel else formatCacheSize(cacheLimitMb)
+        val cacheLimitMb = (cacheLimitBytes / (1024 * 1024)).toInt()
         SearchableSettingsGroup(search, header = stringResource(R.string.storage)) {
-            val showCacheFolderTitle = stringResource(R.string.show_cache_folder)
-            row(showCacheFolderTitle, "cache", "cached songs", "library", "folder") {
-                SettingsRow(
-                    icon = Icons.Rounded.Cached,
-                    title = showCacheFolderTitle,
-                    subtitle = stringResource(R.string.show_cache_folder_subtitle),
-                    trailing = {
-                        Switch(
-                            checked = showCacheFolder,
-                            onCheckedChange = AppSettings::setShowCacheFolder,
-                            colors = SwitchDefaults.colors(
-                                checkedTrackColor = MaterialTheme.colorScheme.primary,
-                                checkedBorderColor = MaterialTheme.colorScheme.primary,
-                            ),
-                        )
-                    },
-                    onClick = { AppSettings.setShowCacheFolder(!showCacheFolder) },
-                )
-            }
             val songCacheLimitTitle = stringResource(R.string.song_cache_limit)
-            row(songCacheLimitTitle, "cache", "space", "unlimited") {
+            row(songCacheLimitTitle, "cache", "space") {
                 SliderRow(
                     icon = Icons.Rounded.Storage,
                     title = songCacheLimitTitle,
-                    subtitle = when {
-                        cacheUnlimited -> stringResource(R.string.song_cache_unlimited_subtitle)
-                        cacheLimitMb > CACHE_WARNING_MB ->
-                            stringResource(R.string.song_cache_large_subtitle, cacheLimitLabel)
-                        else -> stringResource(R.string.song_cache_limit_subtitle)
+                    subtitle = if (cacheLimitMb > CACHE_WARNING_MB) {
+                        stringResource(R.string.song_cache_large_subtitle, formatCacheSize(cacheLimitMb))
+                    } else {
+                        stringResource(R.string.song_cache_limit_subtitle)
                     },
-                    value = cacheLimitLabel,
+                    value = formatCacheSize(cacheLimitMb),
                     sliderValue = cacheLimitMb.toFloat(),
                     onSliderValue = {
                         AppSettings.setAudioCacheLimitBytes(it.roundToInt().toLong() * 1024 * 1024)
                     },
                     valueRange = (AppSettings.DEFAULT_CACHE_LIMIT_BYTES / (1024 * 1024)).toFloat()..
-                        CACHE_UNLIMITED_STOP_MB.toFloat(),
-                    steps = 19,
+                        (AppSettings.MAX_CACHE_LIMIT_BYTES / (1024 * 1024)).toFloat(),
+                    steps = 18,
                 )
             }
             val clearSongCacheTitle = stringResource(R.string.clear_song_cache)
@@ -1150,7 +1117,11 @@ fun SettingsScreen(
                     icon = Icons.Rounded.DeleteSweep,
                     title = clearSongCacheTitle,
                     subtitle = stringResource(R.string.clear_song_cache_subtitle),
-                    onClick = { confirmClearSongCache = true },
+                    onClick = {
+                        AudioCache.clear {
+                            Toast.makeText(context, context.getString(R.string.song_cache_cleared), Toast.LENGTH_SHORT).show()
+                        }
+                    },
                 )
             }
             val clearImageCacheTitle = stringResource(R.string.clear_image_cache)
@@ -1392,12 +1363,10 @@ fun SettingsScreen(
         if (searchQuery.isBlank()) {
         Text(
             text = buildAnnotatedString {
-                pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold))
-                append("DollBloom V$version  ")
+                append("DollBloom $version  ")
                 val linkStyles = TextLinkStyles(
                     style = SpanStyle(
-                        color = MaterialTheme.colorScheme.onBackground,
-                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
                         textDecoration = TextDecoration.Underline,
                     ),
                 )
@@ -1405,12 +1374,12 @@ fun SettingsScreen(
                     append("GitHub")
                 }
                 append("  ")
-                withLink(LinkAnnotation.Url("https://github.com/kushagrasinghx", linkStyles)) {
+                withLink(LinkAnnotation.Url("https://github.com/DominatorStufs", linkStyles)) {
                     append("Developer")
                 }
                 append("\nFork of the GPLv3 BitChord project")
             },
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier
@@ -1478,30 +1447,6 @@ fun SettingsScreen(
                 },
             )
         }
-    }
-
-    // Everything in the Cached songs folder goes with it, so say so first.
-    if (confirmClearSongCache) {
-        AlertDialog(
-            onDismissRequest = { confirmClearSongCache = false },
-            title = { Text(stringResource(R.string.clear_song_cache_title)) },
-            text = { Text(stringResource(R.string.clear_song_cache_warning)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmClearSongCache = false
-                    AudioCache.clear {
-                        Toast.makeText(context, context.getString(R.string.song_cache_cleared), Toast.LENGTH_SHORT).show()
-                    }
-                }) {
-                    Text(stringResource(R.string.clear))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClearSongCache = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-        )
     }
 
     // Asked before the picker opens rather than after a file is chosen: the
@@ -1613,76 +1558,56 @@ fun SettingsScreen(
     }
 
     if (showLastfmLoginDialog) {
-        var usernameInput by remember { mutableStateOf("") }
-        var passwordInput by remember { mutableStateOf("") }
-        var lastfmError by remember { mutableStateOf<String?>(null) }
-        var lastfmLoading by remember { mutableStateOf(false) }
+        // Same guarded surface as the LastfmLoginAlert sheet in Account &
+        // integrations: one shared state holder, one shared field column, one
+        // shared sign-in path — see LastfmLoginFields / lastfmSignIn. The API
+        // pair comes from the single AppSettings.lastfmCredentials flow.
+        val lastfmLoginState = remember { LastfmLoginUiState() }
+        val lastfmCredentials by AppSettings.lastfmCredentials.collectAsStateWithLifecycle()
+        val signIn = {
+            lastfmSignIn(
+                scope = scrobbleScope,
+                state = lastfmLoginState,
+                notConfiguredError = context.getString(R.string.lastfm_api_status_missing),
+                invalidPairError = context.getString(R.string.lastfm_invalid_api_pair),
+                networkError = context.getString(R.string.lastfm_network_error),
+                onSignedIn = { showLastfmLoginDialog = false },
+                onPasswordRefused = {
+                    showLastfmLoginDialog = false
+                    onOpenLastfmAuthorize()
+                },
+            )
+        }
         AlertDialog(
-            onDismissRequest = { if (!lastfmLoading) showLastfmLoginDialog = false },
+            onDismissRequest = { if (!lastfmLoginState.loading) showLastfmLoginDialog = false },
             title = { Text(stringResource(R.string.lastfm_login)) },
             text = {
-                Column {
-                    if (lastfmError != null) {
-                        Text(
-                            text = lastfmError!!,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(bottom = 8.dp),
-                        )
-                    }
-                    OutlinedTextField(
-                        value = usernameInput,
-                        onValueChange = { usernameInput = it },
-                        label = { Text(stringResource(R.string.username)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = passwordInput,
-                        onValueChange = { passwordInput = it },
-                        label = { Text(stringResource(R.string.password)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    LastfmLoginFields(
+                        state = lastfmLoginState,
+                        credentials = lastfmCredentials,
+                        onSignInRequest = signIn,
                     )
                 }
             },
             confirmButton = {
                 TextButton(
-                    onClick = {
-                        lastfmLoading = true
-                        lastfmError = null
-                        scrobbleScope.launch {
-                            try {
-                                // Use the credentials supplied for this build.
-                                LastFM.initialize(
-                                    apiKey = AppSettings.lastfmApiKey.value,
-                                    secret = AppSettings.lastfmSecret.value,
-                                )
-                                LastFM.getMobileSession(usernameInput.trim(), passwordInput)
-                                    .onSuccess { auth ->
-                                        AppSettings.setLastfmSessionKey(auth.session.key)
-                                        AppSettings.setLastfmUsername(auth.session.name)
-                                        AppSettings.setLastfmEnabled(true)
-                                        showLastfmLoginDialog = false
-                                    }
-                                    .onFailure { e ->
-                                        lastfmError = e.message ?: context.getString(R.string.login_failed)
-                                    }
-                            } catch (e: Exception) {
-                                lastfmError = e.message ?: context.getString(R.string.login_failed)
-                            } finally {
-                                lastfmLoading = false
-                            }
-                        }
-                    },
-                    enabled = !lastfmLoading && usernameInput.isNotBlank() && passwordInput.isNotBlank(),
+                    onClick = signIn,
+                    enabled = lastfmSignInEnabled(
+                        lastfmCredentials,
+                        lastfmLoginState.loading,
+                        lastfmLoginState.username,
+                        lastfmLoginState.password,
+                    ),
                 ) {
-                    Text(stringResource(if (lastfmLoading) R.string.signing_in else R.string.sign_in))
+                    Text(stringResource(if (lastfmLoginState.loading) R.string.signing_in else R.string.sign_in))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showLastfmLoginDialog = false }, enabled = !lastfmLoading) {
+                TextButton(
+                    onClick = { showLastfmLoginDialog = false },
+                    enabled = !lastfmLoginState.loading,
+                ) {
                     Text(stringResource(R.string.cancel))
                 }
             },
@@ -1766,12 +1691,6 @@ internal fun openEqualizer(context: Context, sessionId: Int) {
 /** Above this, the cache limit slider's subtitle warns rather than reassures. */
 private const val CACHE_WARNING_MB = 2048
 
-/**
- * Where the cache limit slider's "Unlimited" stop sits: one 512MB step past
- * [AppSettings.MAX_CACHE_LIMIT_BYTES], so the fixed sizes keep their positions.
- */
-private const val CACHE_UNLIMITED_STOP_MB = 10 * 1024 + 512
-
 /** "512 MB", "2 GB", "2.5 GB" — whichever reads more naturally at that size. */
 private fun formatCacheSize(mb: Int): String {
     if (mb < 1024) return "$mb MB"
@@ -1786,22 +1705,13 @@ internal fun AccountCard(
     account: Account?,
     onSignIn: () -> Unit,
     onClick: (() -> Unit)? = null,
-    /** Sits inside a [SettingsGroup] that already supplies the card, so draws none of its own. */
-    grouped: Boolean = false,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (grouped) {
-                    Modifier
-                } else {
-                    Modifier
-                        .padding(horizontal = GROUP_INSET)
-                        .clip(GroupShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                },
-            )
+            .padding(horizontal = GROUP_INSET)
+            .clip(GroupShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
             .then(
                 when {
                     signedIn && onClick != null -> Modifier.clickable(onClick = onClick)

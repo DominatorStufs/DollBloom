@@ -1,0 +1,18 @@
+{
+  "scheme": 1,
+  "kdf": {
+    "algorithm": "pbkdf2-hmac-sha256",
+    "iterations": 600000,
+    "salt": "HwGbetmVqMO2ULnmsZpZPg=="
+  },
+  "verifier": "IiQUve6OKcedM7Kgqy/vShHWAhZZLo52Y/J+eoNW/HY=",
+  "keystore_blob": "dollbloom-release.keystore.enc",
+  "keystore_type": "PKCS12",
+  "key_alias": "dollbloom",
+  "key_bits": 4096,
+  "certificate": "dollbloom-cert.pem",
+  "certificate_sha256": "2D:C3:77:8B:58:1E:C5:2A:30:0E:5F:16:EB:68:01:54:33:8A:D1:31:0C:EE:8B:AE:36:8C:DB:14:73:66:A2:3D",
+  "created": "2026-10-08",
+  "hint": "",
+  "rotated": "2026-10-08"
+}

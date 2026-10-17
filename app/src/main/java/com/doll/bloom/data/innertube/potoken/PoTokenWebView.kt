@@ -40,7 +40,7 @@ class PoTokenWebView private constructor(
     context: Context,
     // to be used exactly once only during initialization!
     private val continuation: Continuation<PoTokenWebView>,
-) : PoTokenMinter {
+) {
     private val webView = WebView(context)
     private val scope = MainScope()
 
@@ -57,7 +57,7 @@ class PoTokenWebView private constructor(
      * delivered reliably enough on its own; callers check this to recreate immediately.
      */
     @Volatile
-    override var isDead: Boolean = false
+    var isDead: Boolean = false
         private set
     private val poTokenContinuations =
         Collections.synchronizedMap(ArrayMap<String, Continuation<String>>())
@@ -147,7 +147,9 @@ class PoTokenWebView private constructor(
         TrackLog.d(TAG, "loadHtmlAndObtainBotguard() called")
 
         scope.launch(exceptionHandler) {
-            val html = PO_TOKEN_HTML
+            val html = withContext(Dispatchers.IO) {
+                webView.context.assets.open("po_token.html").bufferedReader().use { it.readText() }
+            }
 
             // calls downloadAndRunBotguard() when the page has finished loading
             val data = html.replaceFirst("</script>", "\n$JS_INTERFACE.downloadAndRunBotguard()</script>")
@@ -256,7 +258,7 @@ class PoTokenWebView private constructor(
     //endregion
 
     //region Obtaining poTokens
-    override suspend fun generatePoToken(identifier: String): String {
+    suspend fun generatePoToken(identifier: String): String {
         if (isDead || closed) {
             // Fail fast (no fixed timeout wait): PoTokenGenerator's retry path recreates the
             // WebView from scratch.
@@ -343,7 +345,7 @@ class PoTokenWebView private constructor(
         popPoTokenContinuation(requestKey)?.resume(poToken)
     }
 
-    override val isExpired: Boolean
+    val isExpired: Boolean
         get() = Instant.now().isAfter(expirationInstant)
     //endregion
 
@@ -405,7 +407,7 @@ class PoTokenWebView private constructor(
         }
     }
 
-    override fun close() {
+    fun close() {
         if (closed) return
         closed = true
 

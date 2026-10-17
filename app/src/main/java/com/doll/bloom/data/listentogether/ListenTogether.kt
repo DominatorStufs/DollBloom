@@ -1,7 +1,6 @@
 package com.doll.bloom.data.listentogether
 
 import android.content.Context
-import android.os.SystemClock
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.Network
@@ -247,7 +246,7 @@ object ListenTogether {
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val clock = ServerClock(SystemClock::elapsedRealtime)
+    private val clock = ServerClock()
     private val switchMutex = Mutex()
 
     private val _state = MutableStateFlow(State())
@@ -561,7 +560,7 @@ object ListenTogether {
     suspend fun probeHealthWithLatency(serverUrl: String, timeoutMs: Long): ProbeResult {
         val raw = resolveHttpBase(serverUrl)
         if (raw.isBlank()) return ProbeResult(isOnline = false, latencyMs = 0L)
-        val start = clock.nowMs()
+        val start = ServerClock.localNowMs()
         val isOnline = runCatching {
             val response = http.get("$raw/healthz") {
                 timeout { requestTimeoutMillis = timeoutMs }
@@ -573,7 +572,7 @@ object ListenTogether {
             Log.w(TAG, "health check failed for ${redact(raw)}: ${redact(it.message)}")
             false
         }
-        val elapsed = clock.nowMs() - start
+        val elapsed = ServerClock.localNowMs() - start
         return ProbeResult(isOnline = isOnline, latencyMs = if (isOnline) elapsed.coerceAtLeast(0L) else 0L)
     }
 
@@ -1122,12 +1121,12 @@ object ListenTogether {
      */
     fun partyPositionMs(): Long? {
         val playback = _state.value.playback
-        val track = playback.track ?: return null
+        playback.track ?: return null
         if (!playback.isPlaying) return playback.positionMs
         val serverNow = clock.serverNowMs() ?: return playback.effectivePositionMs
         val elapsed = (serverNow - playback.anchorMs).coerceAtLeast(0)
         val position = playback.positionMs + elapsed
-        val duration = track.durationMs
+        val duration = playback.track.durationMs
         return if (duration != null) minOf(position, duration) else position
     }
 
@@ -1223,7 +1222,7 @@ object ListenTogether {
     }
 
     private suspend fun DefaultClientWebSocketSession.ping() {
-        val sentAt = clock.nowMs()
+        val sentAt = ServerClock.localNowMs()
         val frame = buildJsonObject {
             put("type", "ping")
             put("clientMs", sentAt)
@@ -1253,7 +1252,7 @@ object ListenTogether {
     }
 
     private fun onFrame(text: String) {
-        val received = clock.nowMs()
+        val received = ServerClock.localNowMs()
         val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (frame["type"]?.jsonPrimitive?.content) {
             "welcome" -> {

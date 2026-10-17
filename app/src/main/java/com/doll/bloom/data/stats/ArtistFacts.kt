@@ -121,9 +121,17 @@ object ArtistFacts {
 
     private val ready: Boolean get() = this::file.isInitialized
 
-    /** Whether a genre chart can be drawn at all on this build and these settings. */
+    /**
+     * Whether a genre chart can be drawn at all on this build and these settings.
+     *
+     * The key comes from the *selected* application pair rather than
+     * `BuildConfig` directly: a listener who saved their own credentials in-app
+     * on a build whose APK pair is empty gets genres too, and one whose custom
+     * pair overrides the APK's asks Last.fm with the key that actually works.
+     */
     val genresAvailable: Boolean
-        get() = AppSettings.replayGenres.value && BuildConfig.LASTFM_API_KEY.isNotBlank()
+        get() = AppSettings.replayGenres.value &&
+            AppSettings.lastfmCredentials.value.apiKey.isNotBlank()
 
     // ── Reading ─────────────────────────────────────────────────────────────
     //
@@ -229,9 +237,13 @@ object ArtistFacts {
     }
 
     private fun fetchGenres(name: String) {
+        // getTopTags is an unsigned read — the key alone is enough — but it has
+        // to be the selected pair's key, the same one scrobbling signs with.
+        val apiKey = AppSettings.lastfmCredentials.value.apiKey
+        if (apiKey.isBlank()) return
         val url = "https://ws.audioscrobbler.com/2.0/?method=artist.gettoptags" +
             "&artist=${Uri.encode(name)}" +
-            "&api_key=${Uri.encode(BuildConfig.LASTFM_API_KEY)}" +
+            "&api_key=${Uri.encode(apiKey)}" +
             "&autocorrect=1&format=json"
         val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
         val body = Http.client.newCall(request).execute().use { response ->

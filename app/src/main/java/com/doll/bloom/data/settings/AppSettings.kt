@@ -1,6 +1,5 @@
 package com.doll.bloom.data.settings
 
-import com.doll.bloom.data.webdav.update
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
@@ -9,46 +8,67 @@ import android.net.NetworkCapabilities
 import androidx.media3.common.Player
 import com.doll.bloom.BuildConfig
 import com.doll.bloom.auth.AuthStore
-import com.doll.bloom.data.canvas.SpotifyToken
 import com.doll.bloom.data.lyrics.LyricsSource
+import com.doll.bloom.data.scrobbling.LastfmCredentialSource
+import com.doll.bloom.data.scrobbling.LastfmCredentials
 import com.doll.bloom.data.sources.SourceKind
 import com.doll.bloom.playback.EqLayout
 import com.doll.bloom.playback.EqualizerPreset
 import kotlinx.coroutines.flow.MutableStateFlow
 
-
 /**
- * Whether a stream started under this ceiling may be served by [kind].
+ * Stream bitrate ceiling on the YouTube fallback path — MEDIUM, HIGH and
+ * LOSSLESS all mean "whatever the best available Opus format is" there; what
+ * actually tells them apart is which other sources are allowed to answer
+ * *before* YouTube gets asked. That part is [permits], and the rungs read:
  *
- * Asked per stream rather than written into
- * [SourceConfig.enabled][com.doll.bloom.data.sources.SourceConfig.enabled],
- * which is what this used to do — an `applyQualityPreset` call flipped the
- * module and JioSaavn switches the moment a rung was picked. Two things
- * were wrong with that and both were reported together: picking a rung for
- * *mobile data* turned the sources off while sitting on Wi-Fi, and nothing
- * turned them back on when the connection changed, so a Wi-Fi ceiling of
- * Lossless still had no lossless source to reach. A ceiling is a property
- * of the connection in force; the switches on the Sources screen are the
- * user's standing choice. Storing the first in the second lost the second.
+ * - [LOSSLESS] — the user's own addons and JioSaavn both asked.
+ * - [HIGH] — the addons skipped, JioSaavn asked.
+ * - [MEDIUM] and [LOW] — both skipped; YouTube's own Opus ladder is all there
+ *   is, capped at [maxKbps].
  *
- * [SourceKind.YOUTUBE] is permitted on every rung: it is what [maxKbps]
- * caps, and it is the only source that can answer at all when the ones
- * above it are skipped.
- *
- * Lossless-capable providers (addons and module indexes) are permitted on
- * the Lossless *and* High rungs: a listener who went to the trouble of
- * configuring a FLAC source gets it consulted even when the ceiling in
- * force is High. Only the data-saver rungs below fall back to YouTube
- * alone, which is where budgeting bytes is the whole point.
+ * [hourly] is what the ceiling costs in data over an hour of listening, which
+ * is the only part of this a user actually cares about on a metered plan.
  */
-fun AudioQuality.permits(kind: SourceKind): Boolean = when (this) {
-    AudioQuality.LOSSLESS -> true
-    // High caps the YouTube Opus ladder; it does not demote a configured
-    // lossless provider to "skipped by quality". Sources that can serve
-    // bit-exact audio stay in the walk here, so their own copy wins when
-    // they have one.
-    AudioQuality.HIGH -> true
-    AudioQuality.MEDIUM, AudioQuality.LOW -> kind == SourceKind.YOUTUBE
+enum class AudioQuality(
+    val maxKbps: Int,
+    val label: String,
+    val detail: String,
+    val hourly: String,
+) {
+    LOW(64, "Low", "~64 kbps · smallest download", "29 MB/hr"),
+    MEDIUM(Int.MAX_VALUE, "Medium", "Best available · ~171 kbps Opus", "77 MB/hr"),
+    HIGH(Int.MAX_VALUE, "High", "JioSaavn up to 320kbps, YouTube fallback", "144 MB/hr"),
+    LOSSLESS(Int.MAX_VALUE, "Lossless", "Your addons + JioSaavn, bit-exact where available", "300+ MB/hr"),
+    ;
+
+    /**
+     * Whether a stream started under this ceiling may be served by [kind].
+     *
+     * Asked per stream rather than written into
+     * [SourceConfig.enabled][com.doll.bloom.data.sources.SourceConfig.enabled],
+     * which is what this used to do — an `applyQualityPreset` call flipped the
+     * module and JioSaavn switches the moment a rung was picked. Two things
+     * were wrong with that and both were reported together: picking a rung for
+     * *mobile data* turned the sources off while sitting on Wi-Fi, and nothing
+     * turned them back on when the connection changed, so a Wi-Fi ceiling of
+     * Lossless still had no lossless source to reach. A ceiling is a property
+     * of the connection in force; the switches on the Sources screen are the
+     * user's standing choice. Storing the first in the second lost the second.
+     *
+     * [SourceKind.YOUTUBE] is permitted on every rung: it is what [maxKbps]
+     * caps, and it is the only source that can answer at all when the ones
+     * above it are skipped.
+     */
+    fun permits(kind: SourceKind): Boolean = when (this) {
+        LOSSLESS -> true
+        // No lossless answer is wanted here, and a source that can serve one is
+        // the slow half of the list: an addon fronting several catalogues walks
+        // all of them before it answers, which is seconds spent to land on a
+        // transcode JioSaavn already has at 320.
+        HIGH -> !kind.canServeLossless
+        MEDIUM, LOW -> kind == SourceKind.YOUTUBE
+    }
 }
 
 /**
@@ -120,12 +140,31 @@ enum class EqualizerMode {
     MANUAL,
 }
 
+/** CPU budget for Automix's background analysis, not its audible mix algorithm. */
+enum class AutomixPerformanceMode(val inferenceThreads: Int) {
+    EFFICIENT(1),
+    BALANCED(2),
+    PERFORMANCE(4),
+}
+
 /** Stable persisted ordering for each on-device music library. */
 enum class LocalMusicSort {
     TITLE_ASC,
     TITLE_DESC,
     DATE_ADDED,
     DATE_MODIFIED,
+}
+
+/**
+ * Stable persisted ordering for a Library "Show all" grid — playlists or
+ * albums. A card there only ever carries a title, so unlike [LocalMusicSort]
+ * there is nothing date-based to offer.
+ */
+enum class LibrarySort {
+    /** Whatever order the shelf itself arrived in — YouTube Music's own. */
+    DEFAULT,
+    TITLE_ASC,
+    TITLE_DESC,
 }
 
 /**
@@ -145,6 +184,19 @@ enum class SongSort {
     DATE_ADDED_DESC,
 }
 
+/** Display mode for music lists: compact rows or grid cards. */
+enum class LibraryViewType {
+    LIST,
+    GRID,
+}
+
+/** The surface that was last open inside the expanded player. */
+enum class LastPlayerScreen {
+    MAIN,
+    LYRICS,
+    QUEUE,
+}
+
 /**
  * App settings, backed by SharedPreferences and exposed as flows.
  *
@@ -156,7 +208,7 @@ object AppSettings {
 
     private lateinit var prefs: SharedPreferences
 
-    /** Only for the Discord, WebDAV and SMB secrets — everything else on here is plain prefs. */
+    /** Only for credentials — Discord, WebDAV, SMB and the custom Last.fm pair; everything else on here is plain prefs. */
     private lateinit var authStore: AuthStore
 
     /**
@@ -270,9 +322,6 @@ object AppSettings {
      * chasing an untouched signal would do.
      */
     val loudnessNormalization = MutableStateFlow(true)
-
-    /** Skip loudness normalization while the active output is the phone's own speaker. */
-    val loudnessOffOnSpeaker = MutableStateFlow(true)
 
     /**
      * Whether a source offering a Dolby Atmos rendition is allowed to serve it.
@@ -491,17 +540,17 @@ object AppSettings {
     val syncedLyrics = MutableStateFlow(true)
 
     /** The databases [syncedLyrics] may ask. Empty is the same as off. */
-    val lyricsSources = MutableStateFlow(LyricsSource.offered.toSet())
+    val lyricsSources = MutableStateFlow(LyricsSource.entries.toSet())
 
     /**
      * The order [lyricsSources] are asked in — see [LyricsRepository][com.doll.bloom.data.lyrics.LyricsRepository]:
      * every enabled source is asked at once, but a higher-priority one still
      * pending is never preempted by a lower one that happened to answer first.
      * Reordered from Settings, so this is a full permutation of
-     * [LyricsSource.offered] rather than a subset — enabling and ordering are
+     * [LyricsSource.entries] rather than a subset — enabling and ordering are
      * independent choices.
      */
-    val lyricsSourceOrder = MutableStateFlow<List<LyricsSource>>(LyricsSource.offered)
+    val lyricsSourceOrder = MutableStateFlow<List<LyricsSource>>(LyricsSource.entries)
 
     /**
      * Off, the highest-priority source to answer at all is taken as the
@@ -516,19 +565,8 @@ object AppSettings {
     /** User-issued credential required by api.paxsenix.org. */
     val paxSenixApiKey = MutableStateFlow("")
 
-    /**
-     * Disk budget for cached audio. [AudioCache][com.doll.bloom.playback.AudioCache] evicts past it.
-     * [UNLIMITED_CACHE_LIMIT_BYTES] means no ceiling of the app's own.
-     */
+    /** Disk budget for cached audio. [AudioCache][com.doll.bloom.playback.AudioCache] evicts past it. */
     val audioCacheLimitBytes = MutableStateFlow(DEFAULT_CACHE_LIMIT_BYTES)
-
-    /**
-     * Whether Library's "On device" shelf carries the Cached songs folder —
-     * the YouTube and JioSaavn tracks the song cache is holding. Off by
-     * default: the cache is an implementation detail most people never need
-     * to look inside.
-     */
-    val showCacheFolder = MutableStateFlow(false)
 
     // ── Replay ──────────────────────────────────────────────────────────────
 
@@ -619,8 +657,22 @@ object AppSettings {
     val lastfmEnabled = MutableStateFlow(false)
     val lastfmUsername = MutableStateFlow("")
     val lastfmSessionKey = MutableStateFlow("")
-    val lastfmApiKey = MutableStateFlow("")
-    val lastfmSecret = MutableStateFlow("")
+
+    /**
+     * The effective Last.fm application pair — API key and shared secret —
+     * with where it came from, in ONE flow.
+     *
+     * One flow rather than a key flow beside a secret flow: every consumer
+     * (startup, the playback service, both login surfaces, the genre lookup)
+     * needs the two values *of the same source at the same instant*, and two
+     * independently updated fields are observable mid-update, where a combine
+     * snapshot can hold one source's key beside another's secret — a pair
+     * Last.fm answers with a signature error that reads like a wrong password.
+     * See [LastfmCredentials.resolve] for the precedence and
+     * [saveCustomLastfmApiCredentials] for how the custom source is written.
+     */
+    val lastfmCredentials = MutableStateFlow(LastfmCredentials.NotConfigured)
+
     val lastfmEndpoint = MutableStateFlow("")
     val lastfmScrobbleEnabled = MutableStateFlow(false)
     val lastfmNowPlaying = MutableStateFlow(false)
@@ -696,13 +748,6 @@ object AppSettings {
     val smartMixInProgress = MutableStateFlow(false)
 
     /**
-     * The Automix blend in flight — its progress and the beat it runs on — or
-     * null between blends. Published by the crossfade controller every fade
-     * tick; read it in draw, not in composition.
-     */
-    val smartMixBlend = MutableStateFlow<MixBlend?>(null)
-
-    /**
      * True while a version switch is fetching and analysing the other cut
      * before playback actually moves. Drains into the loading bar drawn along
      * the scrubber itself — `ThinSlider.loading` — so the wait reads as work
@@ -756,7 +801,6 @@ object AppSettings {
     fun init(context: Context, authStore: AuthStore) {
         prefs = context.getSharedPreferences("dollbloom_settings", Context.MODE_PRIVATE)
         this.authStore = authStore
-        com.doll.bloom.data.spotify.LocalPlaylistStore.init(context)
         readAll()
         watchConnection(context)
     }
@@ -805,7 +849,6 @@ object AppSettings {
         }.getOrDefault(OutputPcmMode.PCM_16)
         preferUsbDac.value = prefs.getBoolean(KEY_PREFER_USB_DAC, false)
         loudnessNormalization.value = prefs.getBoolean(KEY_LOUDNESS_NORMALIZATION, true)
-        loudnessOffOnSpeaker.value = prefs.getBoolean(KEY_LOUDNESS_OFF_ON_SPEAKER, true)
         dolbyAtmos.value = prefs.getBoolean(KEY_DOLBY_ATMOS, true)
         spatialAudio.value = prefs.getBoolean(KEY_SPATIAL_AUDIO, false)
         equalizerEnabled.value = prefs.getBoolean(KEY_EQ_ENABLED, false)
@@ -865,17 +908,18 @@ object AppSettings {
         prioritizeSyllableSync.value = prefs.getBoolean(KEY_PRIORITIZE_SYLLABLE_SYNC, false)
         paxSenixApiKey.value = prefs.getString(KEY_PAXSENIX_API_KEY, "").orEmpty()
         com.doll.bloom.data.lyrics.PaxSenix.setApiKey(paxSenixApiKey.value)
-        audioCacheLimitBytes.value = clampCacheLimit(prefs.getLong(KEY_CACHE_LIMIT, DEFAULT_CACHE_LIMIT_BYTES))
-        showCacheFolder.value = prefs.getBoolean(KEY_SHOW_CACHE_FOLDER, false)
+        audioCacheLimitBytes.value = prefs.getLong(KEY_CACHE_LIMIT, DEFAULT_CACHE_LIMIT_BYTES)
+            .coerceIn(DEFAULT_CACHE_LIMIT_BYTES, MAX_CACHE_LIMIT_BYTES)
         lastfmEnabled.value = prefs.getBoolean(KEY_LASTFM_ENABLED, false)
         lastfmUsername.value = prefs.getString(KEY_LASTFM_USERNAME, "").orEmpty()
         lastfmSessionKey.value = prefs.getString(KEY_LASTFM_SESSION_KEY, "").orEmpty()
-        lastfmApiKey.value = prefs.getString(KEY_LASTFM_API_KEY, "").orEmpty().ifBlank { BuildConfig.LASTFM_API_KEY }
-        lastfmSecret.value = prefs.getString(KEY_LASTFM_SECRET, "").orEmpty().ifBlank { BuildConfig.LASTFM_SECRET }
         lastfmEndpoint.value = prefs.getString(KEY_LASTFM_ENDPOINT, "").orEmpty()
         lastfmScrobbleEnabled.value = prefs.getBoolean(KEY_LASTFM_SCROBBLE_ENABLED, false)
         lastfmNowPlaying.value = prefs.getBoolean(KEY_LASTFM_NOW_PLAYING, false) && lastfmScrobbleEnabled.value
         lastfmPrimaryArtistOnly.value = prefs.getBoolean(KEY_LASTFM_PRIMARY_ARTIST_ONLY, false)
+        // After the flows above: publishing the effective pair can invalidate a
+        // session whose pair changed, and that writes these same flows.
+        publishLastfmCredentials()
         scrobbleMinDuration.value = prefs.getInt(KEY_SCROBBLE_MIN_DURATION, 30)
         scrobbleDelayPercent.value = prefs.getFloat(KEY_SCROBBLE_DELAY_PERCENT, 0.5f)
         scrobbleDelaySeconds.value = prefs.getInt(KEY_SCROBBLE_DELAY_SECONDS, 180)
@@ -1289,7 +1333,7 @@ object AppSettings {
             // Everything that was on the list this choice was made from, so a
             // later build can tell a source the user turned off from one they
             // have never been shown. See [readLyricsSources].
-            .putString(KEY_LYRICS_SOURCES_SEEN, LyricsSource.offered.joinToString(",") { it.name })
+            .putString(KEY_LYRICS_SOURCES_SEEN, LyricsSource.entries.joinToString(",") { it.name })
             .apply()
     }
 
@@ -1310,12 +1354,12 @@ object AppSettings {
      */
     private fun readLyricsSources(): Set<LyricsSource> {
         val stored = prefs.getString(KEY_LYRICS_SOURCES, null)
-            ?: return LyricsSource.offered.toSet()
+            ?: return LyricsSource.entries.toSet()
         val chosen = stored.split(",").toSources()
         val seen = prefs.getString(KEY_LYRICS_SOURCES_SEEN, null)
             ?.split(",")?.toSources()
             ?: LEGACY_SOURCES
-        return (chosen + LyricsSource.entries.filter { it !in seen }).filterNot { it.hidden }.toSet()
+        return chosen + LyricsSource.entries.filter { it !in seen }
     }
 
     private fun List<String>.toSources(): Set<LyricsSource> =
@@ -1343,18 +1387,17 @@ object AppSettings {
     }
 
     /**
-     * A named source dropped from the stored order — an upgrade removed or
-     * hid it since it was saved — falls out on read; one added since slots in
-     * after its declared neighbour (see [LyricsSource.ordered]), so a fresh
-     * install and an upgraded one agree on where a new source lands until the
-     * user says otherwise.
+     * A named source dropped from the stored order — an upgrade reordered
+     * since it was saved — falls out on read; one added since is appended, in
+     * [LyricsSource]'s own declared order, so a fresh install and an upgraded
+     * one agree on where a new source lands until the user says otherwise.
      */
     private fun readLyricsSourceOrder(): List<LyricsSource> {
         val stored = prefs.getString(KEY_LYRICS_SOURCE_ORDER, null)
-            ?: return LyricsSource.offered
+            ?: return LyricsSource.entries
         val saved = stored.split(",")
             .mapNotNull { name -> LyricsSource.entries.firstOrNull { it.name == name } }
-        return LyricsSource.ordered(saved)
+        return saved + LyricsSource.entries.filter { it !in saved }
     }
 
     fun setPrioritizeSyllableSync(value: Boolean) {
@@ -1375,8 +1418,8 @@ object AppSettings {
      * this is "start over on *which* lyrics", not "turn lyrics off".
      */
     fun resetLyricsSourceSettings() {
-        setLyricsSources(LyricsSource.offered.toSet())
-        setLyricsSourceOrder(LyricsSource.offered)
+        setLyricsSources(LyricsSource.entries.toSet())
+        setLyricsSourceOrder(LyricsSource.entries)
         setPrioritizeSyllableSync(false)
     }
 
@@ -1416,23 +1459,11 @@ object AppSettings {
         prefs.edit().putString(KEY_LAST_PLAYER_SCREEN, value.name).apply()
     }
 
-    /**
-     * Clamped to [DEFAULT_CACHE_LIMIT_BYTES]..[MAX_CACHE_LIMIT_BYTES] — the floor is the default, not zero.
-     * Anything past [MAX_CACHE_LIMIT_BYTES] is [UNLIMITED_CACHE_LIMIT_BYTES].
-     */
+    /** Clamped to [DEFAULT_CACHE_LIMIT_BYTES]..[MAX_CACHE_LIMIT_BYTES] — the floor is the default, not zero. */
     fun setAudioCacheLimitBytes(value: Long) {
-        val clamped = clampCacheLimit(value)
+        val clamped = value.coerceIn(DEFAULT_CACHE_LIMIT_BYTES, MAX_CACHE_LIMIT_BYTES)
         audioCacheLimitBytes.value = clamped
         prefs.edit().putLong(KEY_CACHE_LIMIT, clamped).apply()
-    }
-
-    private fun clampCacheLimit(value: Long): Long =
-        if (value > MAX_CACHE_LIMIT_BYTES) UNLIMITED_CACHE_LIMIT_BYTES
-        else value.coerceAtLeast(DEFAULT_CACHE_LIMIT_BYTES)
-
-    fun setShowCacheFolder(value: Boolean) {
-        showCacheFolder.value = value
-        prefs.edit().putBoolean(KEY_SHOW_CACHE_FOLDER, value).apply()
     }
 
     fun setLastfmEnabled(value: Boolean) {
@@ -1445,19 +1476,177 @@ object AppSettings {
         prefs.edit().putString(KEY_LASTFM_USERNAME, value).apply()
     }
 
+    /**
+     * Stores the Last.fm session key and stamps it with the application pair
+     * it was issued under.
+     *
+     * The stamp is what makes a later pair change provable: [publishLastfmCredentials]
+     * compares digests rather than guessing whether a stored session still
+     * matches, and signing out (a blank value) drops the stamp with it.
+     */
     fun setLastfmSessionKey(value: String) {
         lastfmSessionKey.value = value
-        prefs.edit().putString(KEY_LASTFM_SESSION_KEY, value).apply()
+        val editor = prefs.edit().putString(KEY_LASTFM_SESSION_KEY, value)
+        val credentials = lastfmCredentials.value
+        if (value.isBlank() || !credentials.isConfigured) {
+            editor.remove(KEY_LASTFM_SESSION_CREDENTIAL_STAMP)
+        } else {
+            editor.putString(KEY_LASTFM_SESSION_CREDENTIAL_STAMP, credentials.fingerprint())
+        }
+        editor.apply()
     }
 
-    fun setLastfmApiKey(value: String) {
-        lastfmApiKey.value = value
-        prefs.edit().putString(KEY_LASTFM_API_KEY, value).apply()
+    /**
+     * Saves a deliberately chosen application pair — the "Save API settings"
+     * action of the Last.fm setup UI — as the custom source.
+     *
+     * Only a complete pair is accepted; a partial one changes nothing and
+     * answers `false`, so the UI can say so without ever combining it with
+     * the APK's half. The pair is committed to the encrypted store first and
+     * the legacy plaintext copy is dropped only after that succeeds, inside
+     * [publishLastfmCredentials]'s migration.
+     */
+    fun saveCustomLastfmApiCredentials(apiKey: String, sharedSecret: String): Boolean {
+        if (!this::prefs.isInitialized || !this::authStore.isInitialized) return false
+        val pair = LastfmCredentials.sanitize(apiKey, sharedSecret, LastfmCredentialSource.CUSTOM)
+        if (!pair.isConfigured) return false
+        if (!authStore.saveLastfmApiCredentials(pair.apiKey, pair.sharedSecret)) return false
+        publishLastfmCredentials()
+        return true
     }
 
-    fun setLastfmSecret(value: String) {
-        lastfmSecret.value = value
-        prefs.edit().putString(KEY_LASTFM_SECRET, value).apply()
+    /**
+     * Drops the custom (and any legacy plaintext) override so the APK's own
+     * pair is used again — the "Use APK credentials" action. Does not touch the
+     * session by itself: whether it survives depends on whether the resulting
+     * pair is the one it was issued under, which [publishLastfmCredentials]
+     * decides.
+     */
+    fun resetLastfmApiCredentialsToApk() {
+        if (!this::prefs.isInitialized || !this::authStore.isInitialized) return
+        authStore.clearLastfmApiCredentials()
+        // Both halves of the legacy override go too: a reset that left the
+        // plaintext pair behind would have the next launch migrate it straight
+        // back into the custom source, undoing itself.
+        prefs.edit().remove(KEY_LASTFM_API_KEY).remove(KEY_LASTFM_SECRET).apply()
+        publishLastfmCredentials()
+    }
+
+    /**
+     * Recomputes the effective Last.fm application pair and publishes it in
+     * the one [lastfmCredentials] flow, migrating and invalidating as needed.
+     *
+     * Every write path ends here rather than updating fields piecemeal, so
+     * observers only ever see complete pairs of one source.
+     */
+    private fun publishLastfmCredentials() {
+        if (!this::prefs.isInitialized || !this::authStore.isInitialized) return
+        migrateLegacyLastfmApiCredentials()
+        lastfmCredentials.value = resolveLastfmCredentials()
+        invalidateLastfmSessionOnPairChange()
+    }
+
+    private fun resolveLastfmCredentials(): LastfmCredentials {
+        val custom = LastfmCredentials.sanitize(
+            authStore.lastfmApiKey,
+            authStore.lastfmSharedSecret,
+            LastfmCredentialSource.CUSTOM,
+        )
+        val apk = LastfmCredentials.sanitize(
+            BuildConfig.LASTFM_API_KEY,
+            BuildConfig.LASTFM_SECRET,
+            LastfmCredentialSource.APK_BUILD,
+        )
+        val saved = LastfmCredentials.sanitize(
+            prefs.getString(KEY_LASTFM_API_KEY, ""),
+            prefs.getString(KEY_LASTFM_SECRET, ""),
+            LastfmCredentialSource.SAVED,
+        )
+        return LastfmCredentials.resolve(custom, apk, saved)
+    }
+
+    /**
+     * Moves an old plaintext override into the encrypted store.
+     *
+     * The plaintext copy is deleted only after the durable write reported
+     * success — a migration that deletes first loses the pair when the
+     * Keystore is having its bad day — and only the two credential keys are
+     * touched: no session, no username, no other account's anything. When a
+     * custom pair already exists the plaintext keys are stale leftovers of an
+     * earlier migration and are simply dropped.
+     */
+    private fun migrateLegacyLastfmApiCredentials() {
+        val hasPlaintextPair = prefs.contains(KEY_LASTFM_API_KEY) || prefs.contains(KEY_LASTFM_SECRET)
+        if (!hasPlaintextPair) return
+        val customAlreadyStored = LastfmCredentials.sanitize(
+            authStore.lastfmApiKey,
+            authStore.lastfmSharedSecret,
+            LastfmCredentialSource.CUSTOM,
+        ).isConfigured
+        if (customAlreadyStored) {
+            prefs.edit().remove(KEY_LASTFM_API_KEY).remove(KEY_LASTFM_SECRET).apply()
+            return
+        }
+        val saved = LastfmCredentials.sanitize(
+            prefs.getString(KEY_LASTFM_API_KEY, ""),
+            prefs.getString(KEY_LASTFM_SECRET, ""),
+            LastfmCredentialSource.SAVED,
+        )
+        // Only a complete pair is worth migrating; a partial plaintext remnant
+        // stays where it is, unused (resolve skips it) and unexported (SECRETS).
+        if (!saved.isConfigured) return
+        if (authStore.saveLastfmApiCredentials(saved.apiKey, saved.sharedSecret)) {
+            prefs.edit().remove(KEY_LASTFM_API_KEY).remove(KEY_LASTFM_SECRET).apply()
+        }
+    }
+
+    /**
+     * Drops a stored Last.fm session when the effective application pair is no
+     * longer the one that created it, along with the enabled/scrobble/now-playing
+     * state that hangs off that session.
+     *
+     * A Last.fm session key is bound to the application that minted it, so a
+     * rotated pair leaves the old session answering "Invalid session key" on
+     * every request — better to sign out once, visibly, than to fail quietly
+     * forever. A session whose pair is unchanged survives even when only the
+     * *source* changed (an identical pair saved in-app over the APK's), and a
+     * session from before stamping existed is adopted rather than dropped, so
+     * neither an upgrade nor a launch loop ever logs a compatible session out.
+     */
+    private fun invalidateLastfmSessionOnPairChange() {
+        val sessionKey = prefs.getString(KEY_LASTFM_SESSION_KEY, "").orEmpty()
+        if (sessionKey.isBlank()) {
+            if (prefs.contains(KEY_LASTFM_SESSION_CREDENTIAL_STAMP)) {
+                prefs.edit().remove(KEY_LASTFM_SESSION_CREDENTIAL_STAMP).apply()
+            }
+            return
+        }
+        val effective = lastfmCredentials.value
+        val stamp = prefs.getString(KEY_LASTFM_SESSION_CREDENTIAL_STAMP, null)
+        if (stamp == null) {
+            // Predates stamping: adopt the current pair as the one it belongs
+            // to. It is the pair this device has been using all along.
+            if (effective.isConfigured) {
+                prefs.edit()
+                    .putString(KEY_LASTFM_SESSION_CREDENTIAL_STAMP, effective.fingerprint())
+                    .apply()
+            }
+            return
+        }
+        if (!LastfmCredentials.shouldInvalidateSession(stamp, effective)) return
+        prefs.edit()
+            .putString(KEY_LASTFM_SESSION_KEY, "")
+            .putString(KEY_LASTFM_USERNAME, "")
+            .putBoolean(KEY_LASTFM_ENABLED, false)
+            .putBoolean(KEY_LASTFM_SCROBBLE_ENABLED, false)
+            .putBoolean(KEY_LASTFM_NOW_PLAYING, false)
+            .remove(KEY_LASTFM_SESSION_CREDENTIAL_STAMP)
+            .apply()
+        lastfmSessionKey.value = ""
+        lastfmUsername.value = ""
+        lastfmEnabled.value = false
+        lastfmScrobbleEnabled.value = false
+        lastfmNowPlaying.value = false
     }
 
     fun setLastfmEndpoint(value: String) {
@@ -1468,7 +1657,6 @@ object AppSettings {
     fun setSpotifySpdcToken(value: String) {
         spotifySpdcToken.value = value
         prefs.edit().putString(KEY_SPOTIFY_SPDC_TOKEN, value).apply()
-        SpotifyToken.invalidate()
     }
 
     fun setLastfmScrobbleEnabled(value: Boolean) {
@@ -1494,11 +1682,6 @@ object AppSettings {
     fun setPreferUsbDac(value: Boolean) {
         preferUsbDac.value = value
         prefs.edit().putBoolean(KEY_PREFER_USB_DAC, value).apply()
-    }
-
-    fun setLoudnessOffOnSpeaker(value: Boolean) {
-        loudnessOffOnSpeaker.value = value
-        prefs.edit().putBoolean(KEY_LOUDNESS_OFF_ON_SPEAKER, value).apply()
     }
 
     fun setLoudnessNormalization(value: Boolean) {
@@ -1878,6 +2061,7 @@ object AppSettings {
      */
     private val SECRETS = setOf(
         KEY_LASTFM_SESSION_KEY,
+        KEY_LASTFM_SESSION_CREDENTIAL_STAMP,
         KEY_LASTFM_API_KEY,
         KEY_LASTFM_SECRET,
         KEY_LISTENBRAINZ_TOKEN,
@@ -1907,9 +2091,6 @@ object AppSettings {
     const val DEFAULT_CACHE_LIMIT_BYTES = 512L * 1024 * 1024
     const val MAX_CACHE_LIMIT_BYTES = 10L * 1024 * 1024 * 1024
 
-    /** The cache limit with no ceiling: only free storage bounds it. */
-    const val UNLIMITED_CACHE_LIMIT_BYTES = Long.MAX_VALUE
-
     const val MIN_LYRICS_OFFSET_MS = -5_000
     const val MAX_LYRICS_OFFSET_MS = 5_000
 
@@ -1937,7 +2118,6 @@ object AppSettings {
     private const val KEY_OUTPUT_PCM_MODE = "output_pcm_mode"
     private const val KEY_PREFER_USB_DAC = "prefer_usb_dac"
     private const val KEY_LOUDNESS_NORMALIZATION = "loudness_normalization"
-    private const val KEY_LOUDNESS_OFF_ON_SPEAKER = "loudness_off_on_speaker"
     private const val KEY_DOLBY_ATMOS = "dolby_atmos"
     private const val KEY_SPATIAL_AUDIO = "spatial_audio"
     private const val KEY_EQ_ENABLED = "equalizer_enabled"
@@ -1984,7 +2164,6 @@ object AppSettings {
     private const val KEY_PAXSENIX_API_KEY = "paxsenix_api_key"
     private const val KEY_REPLAY_GENRES = "replay_genres"
     private const val KEY_FILTER_NON_MUSIC_AUDIO = "filter_non_music_audio"
-    private const val KEY_SHOW_CACHE_FOLDER = "show_cache_folder"
     private const val KEY_LOCAL_MUSIC_SORT = "local_music_sort"
     private const val KEY_DOWNLOADED_MUSIC_SORT = "downloaded_music_sort"
     private const val KEY_LIBRARY_SORT = "library_sort"
@@ -2004,8 +2183,22 @@ object AppSettings {
     private const val KEY_LASTFM_ENABLED = "lastfm_enabled"
     private const val KEY_LASTFM_USERNAME = "lastfm_username"
     private const val KEY_LASTFM_SESSION_KEY = "lastfm_session_key"
+
+    /**
+     * Legacy plaintext application-pair keys. This build never writes a pair
+     * here — the custom pair lives encrypted in [AuthStore] — but an upgrade
+     * finds one here, migrates it (see `migrateLegacyLastfmApiCredentials`),
+     * and both names stay in [SECRETS] so an export never carries a remnant.
+     */
     private const val KEY_LASTFM_API_KEY = "lastfm_api_key"
     private const val KEY_LASTFM_SECRET = "lastfm_secret"
+
+    /**
+     * Digest of the application pair the stored session was issued under —
+     * see [LastfmCredentials.fingerprint]. A one-way stamp, not a credential,
+     * but it travels with the session key and is kept out of exports with it.
+     */
+    private const val KEY_LASTFM_SESSION_CREDENTIAL_STAMP = "lastfm_session_credential_stamp"
     private const val KEY_LASTFM_ENDPOINT = "lastfm_endpoint"
     private const val KEY_LASTFM_SCROBBLE_ENABLED = "lastfm_scrobble_enabled"
     private const val KEY_LASTFM_NOW_PLAYING = "lastfm_now_playing"
@@ -2036,5 +2229,57 @@ object AppSettings {
     private const val KEY_LAST_VERSION_CODE = "last_version_code"
 }
 
+/**
+ * Where one track stands in Automix's analysis.
+ *
+ * The three no-result states are kept apart because they call for different
+ * reactions: [WAITING] resolves itself once bytes arrive, [ANALYSING] resolves
+ * itself in a few seconds, and [FAILED] never resolves at all. From outside
+ * they look identical, which is precisely why the line has to say which.
+ */
+enum class TrackAnalysisState {
+    /** Nothing in flight and no result — usually waiting on bytes to arrive. */
+    WAITING,
 
+    /** Decode and inference running now; a result is a few seconds away. */
+    ANALYSING,
 
+    /** Measured, with a tempo the planner can actually use. */
+    ANALYSED,
+
+    /**
+     * Measured off the track's opening, with the whole-track pass running now to
+     * replace those numbers with better ones.
+     *
+     * Its own state rather than either neighbour, because it is genuinely both:
+     * reporting [ANALYSING] made a track that was already usable look like it
+     * had gone backwards, and reporting [ANALYSED] would hide that the cue and
+     * the tempo are about to move.
+     */
+    REFINING,
+
+    /**
+     * Tried and came back with nothing usable — a decode error, or audio that
+     * yielded no tempo. Distinct from [WAITING] because nothing further will
+     * happen on its own: waiting is a matter of time, this is not.
+     */
+    FAILED,
+}
+
+/**
+ * Both sides of the next transition, for stats for nerds.
+ *
+ * A transition needs *both* tracks measured before it can beat-match or cue the
+ * incoming one into its arrangement, so reporting them separately is what makes
+ * a plain crossfade explicable rather than mysterious.
+ */
+data class SmartAnalysis(
+    val current: TrackAnalysisState = TrackAnalysisState.WAITING,
+    val next: TrackAnalysisState = TrackAnalysisState.WAITING,
+)
+
+/**
+ * A span of the playing track, in fractions of its duration, that the next
+ * transition is planned to occupy.
+ */
+data class TransitionWindow(val start: Float, val end: Float)

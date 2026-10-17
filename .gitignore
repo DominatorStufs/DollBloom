@@ -1,6 +1,5 @@
 # Gradle
 .gradle/
-.vscode/
 /build/
 /app/build/
 build/
@@ -40,7 +39,9 @@ keystore.properties
 .tmp_verify/
 .debug/
 
+# Python bytecode from the local-settings tests
+__pycache__/
+*.py[cod]
+
 # AI agent configuration
 AGENTS.md
-/output/
-signing/unlock.pass

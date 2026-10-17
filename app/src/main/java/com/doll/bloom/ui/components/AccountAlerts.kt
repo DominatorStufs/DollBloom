@@ -18,15 +18,18 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +48,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.doll.bloom.data.scrobbling.LastFM
+import com.doll.bloom.data.scrobbling.LastfmCredentials
+import com.doll.bloom.data.scrobbling.LastfmFailureKind
+import com.doll.bloom.data.scrobbling.classifyLastfmFailure
 import com.doll.bloom.data.settings.AppSettings
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
@@ -100,20 +108,183 @@ fun ListenBrainzTokenAlert(
     }
 }
 
+/**
+ * Input and progress of one open Last.fm sign-in surface.
+ *
+ * Shared by [LastfmLoginAlert] and the settings sheet's dialog so the two
+ * cannot drift into different guards or different field handling. Plain
+ * Compose state rather than a ViewModel: it lives exactly as long as the
+ * dialog is open, and nothing else may observe it — the password above all,
+ * which is never trimmed, never persisted, and cleared the moment it has
+ * been used.
+ */
+@Stable
+class LastfmLoginUiState {
+    var username by mutableStateOf("")
+    var password by mutableStateOf("")
+    var error by mutableStateOf<String?>(null)
+    var loading by mutableStateOf(false)
+}
+
+/**
+ * Whether account sign-in may be submitted.
+ *
+ * The single guard both surfaces — button *and* keyboard Done — ask. It starts
+ * at the application pair the build carries: signing in without a complete
+ * API key + shared secret can only produce Last.fm's signature error, which
+ * reads exactly like a wrong account password and is not one.
+ */
+fun lastfmSignInEnabled(
+    credentials: LastfmCredentials,
+    loading: Boolean,
+    username: String,
+    password: String,
+): Boolean =
+    credentials.isConfigured && !loading && username.isNotBlank() && password.isNotEmpty()
+
+/**
+ * The one sign-in path, shared by both surfaces.
+ *
+ * The effective pair comes from the single
+ * [AppSettings.lastfmCredentials] flow — never from separate key/secret
+ * fields that could be observed mid-update — [LastFM] is initialized with
+ * that whole pair, and Last.fm gets the username trimmed and the password
+ * exactly as typed.
+ *
+ * The password attempt is only the first half. Nearly every self-service
+ * API key is web-class, and Last.fm refuses a web-class key's password with
+ * error 4 / HTTP 403 no matter that the account details are correct; when
+ * that specific refusal arrives, [onPasswordRefused] opens Last.fm's own
+ * authorization page instead (see `LastfmAuthFlow` / `LastfmAuthorizeSheet`).
+ * The other failures are sorted by [classifyLastfmFailure] into their own
+ * wording, so a mismatched key/secret pair no longer masquerades as a wrong
+ * password either. On success the session key is stored (stamped with the
+ * pair that created it, inside `setLastfmSessionKey`) and the password is
+ * dropped from memory rather than left in a field nobody will look at again.
+ */
+fun lastfmSignIn(
+    scope: CoroutineScope,
+    state: LastfmLoginUiState,
+    notConfiguredError: String,
+    invalidPairError: String,
+    networkError: String,
+    onSignedIn: () -> Unit,
+    onPasswordRefused: () -> Unit,
+) {
+    if (state.loading) return
+    val credentials = AppSettings.lastfmCredentials.value
+    if (!credentials.isConfigured) {
+        state.error = notConfiguredError
+        return
+    }
+    if (!lastfmSignInEnabled(credentials, state.loading, state.username, state.password)) {
+        return
+    }
+    state.loading = true
+    state.error = null
+    scope.launch {
+        try {
+            LastFM.initialize(
+                apiKey = credentials.apiKey,
+                secret = credentials.sharedSecret,
+            )
+            LastFM.getMobileSession(state.username.trim(), state.password)
+                .onSuccess { auth ->
+                    AppSettings.setLastfmSessionKey(auth.session.key)
+                    AppSettings.setLastfmUsername(auth.session.name)
+                    AppSettings.setLastfmEnabled(true)
+                    state.password = ""
+                    state.loading = false
+                    onSignedIn()
+                }.onFailure { e ->
+                    handleLastfmSignInFailure(
+                        state = state,
+                        error = e,
+                        notConfiguredError = notConfiguredError,
+                        invalidPairError = invalidPairError,
+                        networkError = networkError,
+                        onPasswordRefused = onPasswordRefused,
+                    )
+                }
+        } catch (e: Exception) {
+            state.error = networkError
+            state.loading = false
+        }
+    }
+}
+
+/**
+ * Reads a failed password attempt the way the listener should hear it.
+ *
+ * A refusal (error 4 / HTTP 403) is not a wrong-password message: for a
+ * web-class key it is structural, and the password is cleared before handing
+ * over to the authorization page so it does not sit in the field behind it.
+ */
+private fun handleLastfmSignInFailure(
+    state: LastfmLoginUiState,
+    error: Throwable,
+    notConfiguredError: String,
+    invalidPairError: String,
+    networkError: String,
+    onPasswordRefused: () -> Unit,
+) {
+    when (classifyLastfmFailure(error)) {
+        LastfmFailureKind.PASSWORD_REFUSED -> {
+            state.password = ""
+            state.loading = false
+            onPasswordRefused()
+        }
+        LastfmFailureKind.INVALID_CREDENTIALS -> {
+            state.error = invalidPairError
+            state.loading = false
+        }
+        LastfmFailureKind.NOT_CONFIGURED -> {
+            state.error = notConfiguredError
+            state.loading = false
+        }
+        LastfmFailureKind.NETWORK -> {
+            state.error = networkError
+            state.loading = false
+        }
+    }
+}
+
+/**
+ * The Last.fm sign-in sheet. It asks only for the listener's Last.fm account
+ * (username or email, and password).
+ *
+ * The application pair is a build property, never a listener's input. A build
+ * that carries none says so in one red line and keeps sign-in disabled, so the
+ * password question is only ever asked when it can be answered meaningfully.
+ * A refused password (error 4 / HTTP 403) hands over to [LastfmAuthorizeSheet]
+ * via [onPasswordRefused].
+ */
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
 fun LastfmLoginAlert(
     hazeState: HazeState,
-    usernameInput: String,
-    onUsernameInputChange: (String) -> Unit,
-    passwordInput: String,
-    onPasswordInputChange: (String) -> Unit,
-    error: String?,
-    loading: Boolean,
-    onSignIn: () -> Unit,
     onDismiss: () -> Unit,
+    onPasswordRefused: () -> Unit,
 ) {
-    AlertScaffold(hazeState = hazeState, onDismiss = onDismiss) {
+    val state = remember { LastfmLoginUiState() }
+    val credentials by AppSettings.lastfmCredentials.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val signIn = {
+        lastfmSignIn(
+            scope = scope,
+            state = state,
+            notConfiguredError = context.getString(R.string.lastfm_api_status_missing),
+            invalidPairError = context.getString(R.string.lastfm_invalid_api_pair),
+            networkError = context.getString(R.string.lastfm_network_error),
+            onSignedIn = onDismiss,
+            onPasswordRefused = onPasswordRefused,
+        )
+    }
+    // A dismiss mid-sign-in would strand the coroutine's continuation writing
+    // into a state nobody reads; both the scrim and the cancel row wait.
+    val dismiss = { if (!state.loading) onDismiss() }
+    AlertScaffold(hazeState = hazeState, onDismiss = dismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -126,48 +297,120 @@ fun LastfmLoginAlert(
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,
             )
-            Text(
-                text = error ?: stringResource(R.string.lastfm_login_description),
-                modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 17.sp),
-                color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-            )
-            PillTextField(
-                value = usernameInput,
-                onValueChange = onUsernameInputChange,
-                placeholder = stringResource(R.string.username),
-                enabled = !loading,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-            )
-            Spacer(Modifier.height(8.dp))
-            PillTextField(
-                value = passwordInput,
-                onValueChange = onPasswordInputChange,
-                placeholder = stringResource(R.string.password),
-                enabled = !loading,
-                isPassword = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(
-                    onDone = { if (usernameInput.isNotBlank() && passwordInput.isNotBlank()) onSignIn() },
-                ),
+            LastfmLoginFields(
+                state = state,
+                credentials = credentials,
+                onSignInRequest = signIn,
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(rememberScrollState()),
             )
         }
         AlertRule()
         AlertAction(
-            label = if (loading) stringResource(R.string.signing_in) else stringResource(R.string.sign_in),
+            label = if (state.loading) stringResource(R.string.signing_in) else stringResource(R.string.sign_in),
             emphasised = true,
-            onClick = onSignIn,
-            enabled = !loading && usernameInput.isNotBlank() && passwordInput.isNotBlank(),
+            onClick = signIn,
+            enabled = lastfmSignInEnabled(credentials, state.loading, state.username, state.password),
         )
         AlertRule()
         AlertAction(
             label = stringResource(R.string.cancel),
             emphasised = false,
-            onClick = onDismiss,
-            enabled = !loading,
+            onClick = dismiss,
+            enabled = !state.loading,
         )
     }
+}
+
+/**
+ * The account fields both Last.fm sign-in surfaces share, so the alert here and
+ * the dialog in the settings sheet present the same guards, the same masked
+ * password and the same wording.
+ *
+ * The sheet asks only for the account. The application pair is never shown or
+ * edited here: the description says what the sheet needs, and the red line
+ * appears only for an unconfigured build, to explain why sign-in sits disabled.
+ * Submission — button or keyboard Done — goes through [lastfmSignInEnabled].
+ */
+@Composable
+fun LastfmLoginFields(
+    state: LastfmLoginUiState,
+    credentials: LastfmCredentials,
+    onSignInRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val canSignIn = lastfmSignInEnabled(credentials, state.loading, state.username, state.password)
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = state.error ?: stringResource(R.string.lastfm_login_description),
+            modifier = Modifier.padding(bottom = 10.dp),
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 17.sp),
+            color = if (state.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        // Only an unconfigured build needs more than the description: the
+        // listener has to learn why sign-in sits disabled. A configured
+        // build says nothing about the application pair at all.
+        if (!credentials.isConfigured) {
+            Text(
+                text = stringResource(R.string.lastfm_api_status_missing),
+                modifier = Modifier.padding(bottom = 10.dp),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        LastfmSectionLabel(R.string.lastfm_account_section)
+        PillTextField(
+            value = state.username,
+            onValueChange = { state.username = it },
+            placeholder = stringResource(R.string.lastfm_username_or_email),
+            enabled = !state.loading,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+        )
+        Spacer(Modifier.height(8.dp))
+        PillTextField(
+            value = state.password,
+            onValueChange = { state.password = it },
+            placeholder = stringResource(R.string.password),
+            enabled = !state.loading,
+            isPassword = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(
+                // The keyboard's Done asks the very same guard the button
+                // does; an unconfigured pair or empty input submits nothing.
+                onDone = { if (canSignIn) onSignInRequest() },
+            ),
+        )
+        Text(
+            text = stringResource(R.string.lastfm_account_password_hint),
+            modifier = Modifier.padding(top = 6.dp),
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Start,
+        )
+    }
+}
+
+/** A small left-aligned heading dividing the sheet's two halves. */
+@Composable
+private fun LastfmSectionLabel(textRes: Int) {
+    Text(
+        text = stringResource(textRes),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurface,
+        textAlign = TextAlign.Start,
+    )
 }
 
 /**

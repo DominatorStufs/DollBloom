@@ -82,8 +82,7 @@ object MediaTagger {
 
     /** Fetch artwork before publication so batch downloads can overlap it with audio. */
     internal fun artworkFor(context: Context, track: Song): Artwork? {
-        val thumbnailUrl = track.thumbnailUrl
-        if (thumbnailUrl.isNullOrBlank()) {
+        if (track.thumbnailUrl.isNullOrBlank()) {
             // Said out loud rather than returned as a quiet null. An album's own
             // track rows carry no artwork — the release is billed once in the
             // header — so a row that gets this far without having the release's
@@ -94,7 +93,7 @@ object MediaTagger {
             Log.d(TAG, "no artwork url for ${track.videoId}; saving it without a cover")
             return null
         }
-        cachedArtwork(context, thumbnailUrl)?.let { return it }
+        cachedArtwork(context, track.thumbnailUrl)?.let { return it }
         return fetchCover(track)
     }
 
@@ -133,10 +132,10 @@ object MediaTagger {
      * album and playlist records an image that remains available offline.
      */
     internal fun persistArtwork(context: Context, sourceUrl: String?, artwork: Artwork?): String? {
-        if (artwork == null || artwork.bytes.isEmpty()) return null
+        if (sourceUrl.isNullOrBlank() || artwork == null || artwork.bytes.isEmpty()) return null
         return runCatching {
             val folder = File(context.filesDir, "download-artwork")
-            val target = artworkFile(context, sourceUrl, artwork)
+            val target = artworkFile(context, sourceUrl)
             val name = target.name
             synchronized(artworkFileLock) {
                 if (!target.exists()) {
@@ -173,17 +172,10 @@ object MediaTagger {
             ?.let { Artwork(it, "image/jpeg") }
     }.getOrNull()
 
-    private fun artworkFile(context: Context, sourceUrl: String?, artwork: Artwork? = null): File {
-        val name: String
-        if (sourceUrl.isNullOrBlank()) {
-            name = MessageDigest.getInstance("SHA-256")
-                .digest(artwork?.bytes ?: byteArrayOf())
-                .joinToString("") { "%02x".format(it.toInt() and 0xFF) } + ".jpg"
-        } else {
-            name = MessageDigest.getInstance("SHA-256")
-                .digest(sourceUrl.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it.toInt() and 0xFF) } + ".jpg"
-        }
+    private fun artworkFile(context: Context, sourceUrl: String): File {
+        val name = MessageDigest.getInstance("SHA-256")
+            .digest(sourceUrl.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xFF) } + ".jpg"
         return File(File(context.filesDir, "download-artwork"), name)
     }
 
@@ -223,11 +215,8 @@ object MediaTagger {
         val original = readAll(context, uri) ?: return
         val tagged = runCatching {
             when (extension) {
-                // Indexed first: a fragmented file saved without a `sidx`
-                // plays but cannot seek. Returns [original] when it has
-                // nothing to add, so the identity check below still holds.
                 "m4a" -> Mp4Tagger.tag(
-                    Mp4Sidx.ensure(original),
+                    original,
                     track.title,
                     track.artist,
                     track.albumName,

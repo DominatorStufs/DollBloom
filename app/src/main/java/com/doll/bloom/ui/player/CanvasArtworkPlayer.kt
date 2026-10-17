@@ -32,8 +32,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
@@ -69,6 +67,12 @@ private const val TAG = "CanvasArtworkPlayer"
  */
 private const val REPAINT_TIMEOUT_MS = 700L
 
+/** How a clip fills the bounds supplied by its caller. */
+enum class CanvasContentMode {
+    CROP,
+    FIT_PORTRAIT,
+}
+
 /**
  * The looping video that plays over a track's cover art, sized to fill and
  * clipped by whatever laid it out.
@@ -85,7 +89,7 @@ private const val REPAINT_TIMEOUT_MS = 700L
  */
 @OptIn(UnstableApi::class)
 @Composable
-internal fun AndroidCanvasArtworkPlayer(
+fun CanvasArtworkPlayer(
     canvas: CanvasArtwork,
     isPlaying: Boolean,
     modifier: Modifier = Modifier,
@@ -101,7 +105,7 @@ internal fun AndroidCanvasArtworkPlayer(
     /** Fires once the clip has an actual frame on screen, and again if it drops back to none. */
     onRenderedChanged: (Boolean) -> Unit = {},
     /** A single frame off the playing clip, for callers that want to re-tint around it. */
-    onFrameCaptured: (ImageBitmap) -> Unit = {},
+    onFrameCaptured: (Bitmap) -> Unit = {},
     /**
      * Keep calling [onFrameCaptured] every so many milliseconds instead of
      * only once — for a caller re-tinting its backdrop off a playing clip,
@@ -297,7 +301,7 @@ internal fun AndroidCanvasArtworkPlayer(
         val bitmap = view.captureAt(frameCapturePx, clipAspect, contentMode, alignPortraitTop)
         if (bitmap != null) {
             Log.d(TAG, "frame captured after rendered=true, size=${bitmap.width}x${bitmap.height}")
-            onFrameCaptured(bitmap.asImageBitmap())
+            onFrameCaptured(bitmap)
         } else {
             Log.w(TAG, "frame capture returned null after rendered=true")
         }
@@ -318,7 +322,7 @@ internal fun AndroidCanvasArtworkPlayer(
             val bitmap = view.captureAt(frameCapturePx, clipAspect, contentMode, alignPortraitTop)
             if (bitmap != null) {
                 Log.d(TAG, "periodic frame captured, size=${bitmap.width}x${bitmap.height}")
-                onFrameCaptured(bitmap.asImageBitmap())
+                onFrameCaptured(bitmap)
             } else {
                 Log.w(TAG, "periodic frame capture returned null")
             }
@@ -453,7 +457,6 @@ internal fun AndroidCanvasArtworkPlayer(
         },
         update = { frame ->
             val view = frame.getChildAt(0) as TextureView
-            val applied = frame.applied
             // Set on the view itself. A Compose alpha layer over a TextureView
             // is not reliably composited, and this is the same fade either way.
             view.alpha = if (contentMode == CanvasContentMode.FIT_PORTRAIT && clipAspect <= 0f) {
@@ -464,18 +467,9 @@ internal fun AndroidCanvasArtworkPlayer(
                 // recomposing the player around it.
                 alpha * presentationAlpha()
             }
-            // Only when something they are made of has changed. The fade above
-            // re-runs this block on every frame of a collapse or of the player
-            // closing into the mini player, and each pass built a fresh matrix,
-            // gradient and three RenderEffects for a picture that hadn't
-            // moved — and re-setting the effect makes the node rebuild it.
-            if (applied.transformDiffers(clipAspect, contentMode, alignPortraitTop, view.width, view.height)) {
-                view.applyContentTransform(clipAspect, contentMode, alignPortraitTop)
-            }
+            view.applyContentTransform(clipAspect, contentMode, alignPortraitTop)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (applied.fadeDiffers(bottomFade, bounds, bottomFadeEndPx)) {
-                    view.setBottomFade(bottomFade, bounds, bottomFadeEndPx)
-                }
+                view.setBottomFade(bottomFade, bounds, bottomFadeEndPx)
             } else {
                 frame.fadeFraction = bottomFade
                 frame.fadeEndPx = bottomFadeEndPx
@@ -636,52 +630,7 @@ private fun TextureView.setBottomFade(fraction: Float, bounds: IntSize, endPx: F
  * while [fadeFraction] is zero: with no fade asked for this is a plain
  * FrameLayout and `dispatchDraw` takes the ordinary path.
  */
-/**
- * What the update block last applied to the clip's view, so it re-applies a
- * transform or a fade only when one of its inputs has actually changed.
- */
-private class AppliedLook {
-    private var aspect = Float.NaN
-    private var mode: CanvasContentMode? = null
-    private var alignTop = false
-    private var width = -1
-    private var height = -1
-
-    private var fade = Float.NaN
-    private var fadeBounds = IntSize(-1, -1)
-    private var fadeEnd: Float? = Float.NaN
-
-    fun transformDiffers(
-        clipAspect: Float,
-        contentMode: CanvasContentMode,
-        alignPortraitTop: Boolean,
-        viewWidth: Int,
-        viewHeight: Int,
-    ): Boolean {
-        if (clipAspect == aspect && contentMode == mode && alignPortraitTop == alignTop &&
-            viewWidth == width && viewHeight == height
-        ) return false
-        aspect = clipAspect
-        mode = contentMode
-        alignTop = alignPortraitTop
-        width = viewWidth
-        height = viewHeight
-        return true
-    }
-
-    fun fadeDiffers(fraction: Float, bounds: IntSize, endPx: Float?): Boolean {
-        if (fraction == fade && bounds == fadeBounds && endPx == fadeEnd) return false
-        fade = fraction
-        fadeBounds = bounds
-        fadeEnd = endPx
-        return true
-    }
-}
-
 private class FadingBottomFrame(context: Context) : FrameLayout(context) {
-    /** See [AppliedLook]. */
-    val applied = AppliedLook()
-
     /** Share of the height, from the bottom, over which the child dissolves. */
     var fadeFraction: Float = 0f
         set(value) {
@@ -751,27 +700,4 @@ private fun mimeTypeOf(url: String): String? {
         path.endsWith(".mp4") -> MimeTypes.VIDEO_MP4
         else -> null
     }
-}
-
-/** The phone's decoder behind [CanvasArtworkPlayer] — see [PlayerHost.CanvasVideo]. */
-@Composable
-internal fun AndroidCanvasVideo(spec: CanvasVideoSpec, modifier: Modifier) {
-    AndroidCanvasArtworkPlayer(
-        canvas = spec.canvas,
-        isPlaying = spec.isPlaying,
-        modifier = modifier,
-        contentMode = spec.contentMode,
-        alignPortraitTop = spec.alignPortraitTop,
-        onAspectRatioChanged = spec.onAspectRatioChanged,
-        portraitRevealBounds = spec.portraitRevealBounds,
-        presentationAlpha = spec.presentationAlpha,
-        onRenderedChanged = spec.onRenderedChanged,
-        onFrameCaptured = spec.onFrameCaptured,
-        refreshFrameEveryMs = spec.refreshFrameEveryMs,
-        frameCapturePx = spec.frameCapturePx,
-        onCoverChanged = spec.onCoverChanged,
-        bottomFade = spec.bottomFade,
-        bottomFadeEndPx = spec.bottomFadeEndPx,
-        pausedForTransition = spec.pausedForTransition,
-    )
 }

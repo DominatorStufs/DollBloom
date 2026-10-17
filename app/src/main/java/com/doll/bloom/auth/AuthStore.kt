@@ -6,8 +6,9 @@ import android.content.SharedPreferences
 /**
  * Encrypted-at-rest storage for credentials.
  *
- * Two live here: the YouTube Music session cookie, and — if the user turns on
- * the Discord integration — that account's own bearer token. Neither is a
+ * Three live here: the YouTube Music session cookie, the bearer token of the
+ * Discord account the user linked if they turned that integration on, and the
+ * passwords for any WebDAV or SMB share they added. Neither is a
  * password: the Google one is typed into accounts.google.com inside a WebView,
  * and the Discord one is read out of a completed login session. But both grant
  * full access to their account, so they don't go in the plain prefs the
@@ -113,6 +114,61 @@ class AuthStore(context: Context) {
     var smbPassword: String?
         get() = prefs.getString(KEY_SMB_PASSWORD, null)
         set(value) = prefs.edit().putString(KEY_SMB_PASSWORD, value).apply()
+
+    /**
+     * The Last.fm *application* credentials a listener saved in-app: the API
+     * key of a registered Last.fm application and its matching shared secret.
+     *
+     * Not account credentials — no Last.fm username or password is ever stored
+     * here; the account side is a session key, which lives in the plain
+     * settings like every other scrobbler token. The shared secret signs every
+     * authenticated request, though, so the pair is encrypted like the other
+     * credentials here and, being in this store, is structurally outside the
+     * settings export. Written only as a complete pair, through
+     * [saveLastfmApiCredentials].
+     */
+    val lastfmApiKey: String?
+        get() = prefs.getString(KEY_LASTFM_API_KEY, null)
+
+    val lastfmSharedSecret: String?
+        get() = prefs.getString(KEY_LASTFM_SHARED_SECRET, null)
+
+    /**
+     * Persists a complete application pair, and reports whether it is on disk.
+     *
+     * [commit][SharedPreferences.Editor.commit] rather than `apply`: callers
+     * treat a `true` here as licence to delete the older plaintext copy of the
+     * pair from the settings file, and deleting the only other copy of a
+     * credential on the strength of a write still sitting in a memory queue is
+     * how pairs get lost. A store that throws (a Keystore this device can't
+     * use at all, a full disk) answers `false` and changes nothing.
+     */
+    fun saveLastfmApiCredentials(apiKey: String, sharedSecret: String): Boolean =
+        try {
+            prefs.edit()
+                .putString(KEY_LASTFM_API_KEY, apiKey)
+                .putString(KEY_LASTFM_SHARED_SECRET, sharedSecret)
+                .commit()
+        } catch (e: Exception) {
+            false
+        }
+
+    /**
+     * Drops the saved pair — "Use APK credentials" in the settings UI. The
+     * session key is *not* touched here: whether it survives is decided by
+     * pair compatibility, in `AppSettings`, not by which source is selected.
+     */
+    fun clearLastfmApiCredentials() {
+        try {
+            prefs.edit()
+                .remove(KEY_LASTFM_API_KEY)
+                .remove(KEY_LASTFM_SHARED_SECRET)
+                .commit()
+        } catch (e: Exception) {
+            // Nothing else to do: the pair is simply still there, and the next
+            // attempt or the next launch will read it as the custom source.
+        }
+    }
 
     /**
      * The channel the listener chose to act as, if they chose one.
@@ -223,5 +279,7 @@ class AuthStore(context: Context) {
         private const val KEY_DISCORD_TOKEN = "discord_token"
         private const val KEY_WEBDAV_PASSWORD = "webdav_password"
         private const val KEY_SMB_PASSWORD = "smb_password"
+        private const val KEY_LASTFM_API_KEY = "lastfm_api_key"
+        private const val KEY_LASTFM_SHARED_SECRET = "lastfm_shared_secret"
     }
 }

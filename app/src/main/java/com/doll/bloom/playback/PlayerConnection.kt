@@ -8,6 +8,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,7 +24,6 @@ import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
-import com.doll.bloom.data.model.ArtistRef
 import com.doll.bloom.data.model.NOTIFICATION_ART_PX
 import com.doll.bloom.data.model.PlaybackSourceType
 import com.doll.bloom.data.model.QueueTier
@@ -39,6 +39,61 @@ import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+
+/**
+ * The playhead, deliberately kept out of [PlayerState].
+ *
+ * It moves twice a second; everything else on [PlayerState] moves on a track
+ * change. Carried in the same object, the two are one snapshot read — and
+ * [rememberPlayerState] returns a value, which makes it non-restartable, which
+ * pushes that read up into its *caller's* scope. In this app the caller is the
+ * root of the whole UI, so a ticking playhead invalidated the entire tree twice
+ * a second: every tab, both floating bars, and the three real-time blurs
+ * underneath them, whether or not anything on screen showed a position.
+ *
+ * Split out and held behind a stable object, the tick is a read of this alone.
+ * Whoever draws a scrubber reads it and recomposes; nobody else hears about it.
+ * Take care to keep it that way — reading [positionMs] high in the tree and
+ * passing the `Long` down puts the invalidation straight back where it was.
+ */
+@Stable
+class PlaybackPosition internal constructor() {
+    /** The latest reading of the playhead. Written through [report], with the time it was taken. */
+    var positionMs by mutableLongStateOf(0L)
+        private set
+
+    /**
+     * When [positionMs] was read off the player, on the [System.nanoTime] clock.
+     *
+     * The lyrics run a clock of their own between readings, and the only thing
+     * that lets them use a reading is knowing *when* it was true. The moment the
+     * UI first sees one is not that: it waits on the main thread, and a busy
+     * frame there — a heavy recomposition, a collection, the blur stack — holds
+     * it back by as long as the frame takes. Dated by when it was seen, a reading
+     * from before a half-second stall looked half a second old, and the lyrics
+     * either stopped to wait for it or rolled back to meet it.
+     */
+    var sampledAtNanos by mutableLongStateOf(0L)
+        private set
+
+    /**
+     * Bumped by the owner every time the playhead jumps on purpose — a seek, a
+     * skip, a repeat starting over — so the lyrics can tell a real jump from a
+     * reading that is merely late or early. Nothing else is allowed to move them
+     * backwards.
+     */
+    var seeks by mutableIntStateOf(0)
+
+    /**
+     * Records a reading of the playhead and when it was taken. Pass
+     * [sampledAtNanos] when the reading was made somewhere else and handed over,
+     * so it carries the moment it was true and not the moment it arrived.
+     */
+    fun report(positionMs: Long, sampledAtNanos: Long = System.nanoTime()) {
+        this.positionMs = positionMs
+        this.sampledAtNanos = sampledAtNanos
+    }
+}
 
 /** Snapshot of playback state, driven by the MediaController. */
 data class PlayerState(
@@ -156,31 +211,6 @@ fun MediaController.swapToVersion(targetSong: Song) {
     )
 }
 
-/**
- * The credited artists, read back out of the two parallel lists they travel in.
- *
- * A `Song` is a data class and a `MediaItem`'s extras are a `Bundle`, which
- * holds scalars and collections of them — so the credits cross as their names
- * and their ids side by side rather than as the list itself. A blank id is a
- * name YouTube stated without a channel behind it, which is kept so the credit
- * still reads; it simply has no page to open.
- *
- * Shorter of the two lists wins, and they are written together, so a bundle
- * that has been through something which dropped one of them yields what is left
- * rather than a list of names with no ids or ids with no names.
- */
-private fun Bundle.artistsFromBundle(): List<ArtistRef> {
-    val names = getStringArrayList(ARTISTS_NAMES).orEmpty()
-    val ids = getStringArrayList(ARTISTS_IDS).orEmpty()
-    if (names.isEmpty() || ids.isEmpty()) return emptyList()
-    return names.indices.map { index ->
-        ArtistRef(name = names[index], browseId = ids.getOrNull(index)?.ifBlank { null })
-    }
-}
-
-private const val ARTISTS_NAMES = "artistNames"
-private const val ARTISTS_IDS = "artistIds"
-
 fun Song.toSongBundle(): Bundle = bundleOf(
     "videoId" to videoId,
     "title" to title,
@@ -203,12 +233,7 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "playbackSourceType" to playbackSourceType?.name,
     "playbackSourceId" to playbackSourceId,
     "isExplicit" to (isExplicit ?: false),
-    // `bundleOf` has no overload for a list of strings, so the two halves of
-    // the credits go in afterwards.
-).apply {
-    putStringArrayList(ARTISTS_NAMES, ArrayList(artists.map { it.name }))
-    putStringArrayList(ARTISTS_IDS, ArrayList(artists.map { it.browseId.orEmpty() }))
-}
+)
 
 fun songFromBundle(b: Bundle): Song = Song(
     videoId = b.getString("videoId").orEmpty(),
@@ -217,7 +242,6 @@ fun songFromBundle(b: Bundle): Song = Song(
     thumbnailUrl = b.getString("thumbnailUrl"),
     durationText = b.getString("durationText"),
     artistId = b.getString("artistId"),
-    artists = b.artistsFromBundle(),
     albumId = b.getString("albumId"),
     albumName = b.getString("albumName"),
     isVideo = b.getBoolean("isVideo"),
@@ -330,10 +354,10 @@ fun rememberPlayerState(controller: MediaController?): PlayerState {
                     queueChanged = true
                 }
             }
-            // Every jump the player makes — a seek, a skip, a repeat starting
-            // over, a stretch of silence skipped — is announced here, ahead of
-            // the `onEvents` that reports where it landed. It is the only thing
-            // the lyrics accept as a reason to go backwards; see PlaybackPosition.
+            // A deliberate jump of the playhead — a seek, a skip, a repeat
+            // starting over. Announced here so the lyric clock can tell a real
+            // jump from a reading that is merely late or early; nothing else is
+            // allowed to move the words backwards.
             override fun onPositionDiscontinuity(
                 oldPosition: Player.PositionInfo,
                 newPosition: Player.PositionInfo,
@@ -387,7 +411,6 @@ fun MediaItem.toSong() = Song(
     thumbnailUrl = mediaMetadata.artworkUri?.toString(),
     durationText = mediaMetadata.extras?.getString(EXTRA_DURATION),
     artistId = mediaMetadata.extras?.getString(EXTRA_ARTIST_ID),
-    artists = mediaMetadata.extras?.artistsFromBundle() ?: emptyList(),
     albumId = mediaMetadata.extras?.getString(EXTRA_ALBUM_ID),
     albumName = mediaMetadata.albumTitle?.toString(),
     isExplicit = mediaMetadata.extras?.takeIf { it.containsKey(EXTRA_EXPLICIT) }
@@ -492,6 +515,24 @@ val MediaItem.isVideoOrigin: Boolean
     get() = mediaMetadata.extras?.getBoolean(EXTRA_VIDEO_ORIGIN) == true ||
         mediaMetadata.extras?.getBoolean(EXTRA_IS_VIDEO) == true
 
+/**
+ * Where AutoPlay's section of the queue begins, and so where a track queued by
+ * hand belongs — above the mix, below everything the user picked.
+ *
+ * Read as "the first of AutoPlay's tracks still to come", which is what keeps
+ * it below the playing track even when the mix itself is what's playing: the
+ * tracks of it already behind you count as played, and the section starts
+ * again below the needle. Tracks put in by hand there — "Play next" while the
+ * mix runs — stay above it too, for the same reason.
+ *
+ * The queue panel draws its AutoPlay heading at this same index.
+ */
+fun autoplaySectionStart(fromAutoplay: List<Boolean>, currentIndex: Int): Int {
+    val after = (currentIndex + 1).coerceIn(0, fromAutoplay.size)
+    return (after until fromAutoplay.size).firstOrNull { fromAutoplay[it] }
+        ?: fromAutoplay.size
+}
+
 fun MediaController.autoplaySectionStart(): Int = autoplaySectionStart(
     fromAutoplay = (0 until mediaItemCount).map { getMediaItemAt(it).fromAutoplay },
     currentIndex = currentMediaItemIndex,
@@ -513,10 +554,6 @@ fun MediaController.autoplaySectionStart(): Int = autoplaySectionStart(
 private val DIRECT_FILE_URI_EXTENSIONS = setOf(
     "m4a", "m4b", "m4p", "mp4", "aac", "3ga", "3gp", "3gpp",
     "alac", "amr", "awb", "wma", "aif", "aiff", "ac3", "dts",
-    // DSF keeps its tags at the end, so the extractor reads the tail first and
-    // seeks back to the audio; DFF walks every chunk to the end before it
-    // starts, and seeks back the same way.
-    "dsf", "dff",
 )
 
 private fun resolvePlaybackUri(uriString: String, localPath: String?): String {
